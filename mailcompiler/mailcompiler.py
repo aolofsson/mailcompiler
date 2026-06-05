@@ -877,11 +877,11 @@ def _is_noreply(pairs):
 
 
 def _resolve_llm_out(out):
-    """Resolve the JSONL corpus path: a directory -> emails.jsonl inside it; a
-    file without a .jsonl/.json suffix gets .jsonl appended."""
-    out = os.path.abspath(out)
+    """Resolve the JSONL corpus path: a file without a .jsonl/.json suffix gets
+    .jsonl appended."""
     if os.path.isdir(out) or out.endswith(os.sep):
-        return os.path.join(out, "emails.jsonl")
+        sys.exit("error: -o must be a file path, not a directory: %s" % out)
+    out = os.path.abspath(out)
     if os.path.splitext(out)[1].lower() not in (".jsonl", ".json"):
         out += ".jsonl"
     return out
@@ -997,11 +997,11 @@ def dedup_contacts(rows):
 
 
 def _resolve_db_out(arg):
-    """Resolve a contacts-DB output path: a directory -> contacts.json inside it;
-    a bare name without a .json/.csv suffix -> .json appended."""
+    """Resolve a contacts-DB output path: a bare name without a .json/.csv suffix
+    -> .json appended."""
+    if os.path.isdir(arg) or arg.endswith(os.sep):
+        sys.exit("error: -o must be a file path, not a directory: %s" % arg)
     out = os.path.abspath(arg)
-    if os.path.isdir(out) or arg.endswith(os.sep):
-        return os.path.join(out, "contacts.json")
     if os.path.splitext(out)[1].lower() not in (".json", ".csv"):
         out += ".json"
     return out
@@ -1475,9 +1475,8 @@ def parse_args(argv=None):
     sc.add_argument("-i", "--input", dest="input", required=True,
                     help="path to the .mbox, .pst, or .vcf/.vcd file to import")
     sc.add_argument("-o", dest="out", required=True,
-                    help="output path: .json (native) or .csv (export); a "
-                         "directory writes contacts.json. With --llm, the JSONL "
-                         "corpus path (directory writes emails.jsonl)")
+                    help="output file path: .json (native) or .csv (export). "
+                         "With --llm, the JSONL corpus file path")
     sc.add_argument("--blacklist", dest="blacklist", metavar="PATH",
                     help="file of domains to exclude from contacts (one per "
                          "line; '#' comments and blank lines ignored)")
@@ -1531,8 +1530,8 @@ def parse_args(argv=None):
     dd.add_argument("-i", "--input", dest="input", required=True,
                     help="path to the contacts JSON or CSV to deduplicate")
     dd.add_argument("-o", "--output", dest="output", required=True,
-                    help="output path (.json/.csv, or a directory); may equal "
-                         "-i to rewrite in place")
+                    help="output file path (.json/.csv); may equal -i to "
+                         "rewrite in place")
     dd.set_defaults(func=cmd_dedup)
 
     return p.parse_args(argv)

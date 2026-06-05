@@ -12,19 +12,19 @@ database.
 - Email client search functions are completely broken
 
 ## Key features
-
-- Import from Gmail Takeout `.mbox` and Outlook `.pst`(handles 20 GB+)
-- Automatic extraction of email conversations into contacts
-- Automatic extraction of phone numbers from email signatures
+- Clean human readable JSON contact database
+- Fast import from Gmail Takeout `.mbox` and Outlook `.pst` (handles 20 GB+)
 - Import/export support for VCARD (3.0) and CSV (Outlook) contact lists
 - Streaming .mbox into LLM friendly JSON corpus
+- Automatic extraction of email conversations into contacts
+- Automatic extraction of phone numbers from email signatures
 - Incremental non-destructive merging of multiple JSON databases
 - Deduplication of records
 - Black list email list support
 - Automatic filtering of bot farm email addresses
 - Record filtering on export
 
-## Install (development)
+## Installation
 
 ```bash
 python -m venv .venv
@@ -32,20 +32,63 @@ source .venv/bin/activate
 pip install -e .
 ```
 
+## MC Commandline Utility
+
+The MailCompiler command line utility is called 'mc'
+
 `mc` has one subcommand per operation, all with a uniform `-i/--input`:
 
 ```
-mc import  -i MBOX|PST|VCF|CSV -o OUT [...]   build/merge the contacts DB
-mc export  -i CONTACTS -o OUT.{csv,vcf}       export matching records
-mc dedup   -i CONTACTS -o OUT                 merge same-name contacts
+mc import  -i MBOX|PST|VCF|CSV -o contacts.json [...]  build/merge the contacts DB
+mc export  -i contacts.json -o out.{csv,vcf}           export matching records
+mc dedup   -i contacts.json -o out.json                merge same-name contacts
 ```
 
-Import reads a Gmail Takeout `.mbox`, an Outlook `.pst`, a vCard `.vcf`/`.vcd`,
-or (with `--outlook`) an Outlook CSV -- chosen by file extension. The database is
-JSON (the native format); pass `-o something.csv` for a lossless CSV copy.
-`mc import --llm` instead writes a per-email JSONL corpus for LLMs.
+## Examples
 
-Without installing, run it as a module: `python -m mailcompiler.mailcompiler <command> ...`.
+Build the contacts DB from a Gmail Takeout mbox:
+
+    mc import -i "All mail Including Spam and Trash.mbox" -o data/contacts.json
+
+Import an Outlook PST instead:
+
+    mc import -i archive.pst -o data/contacts.json
+
+Import a vCard export (Google Contacts / Gmail), merging into the DB:
+
+    mc import -i contacts.vcf -o data/contacts.json
+
+Import an Outlook / Google Contacts CSV export:
+
+    mc import --outlook -i contacts.csv -o data/contacts.json
+
+Exclude whole domains while importing:
+
+    mc import -i archive.pst -o data/contacts.json --blacklist blacklist.txt
+
+Overwrite the DB instead of merging (discards manual edits):
+
+    mc import -f -i archive.pst -o data/contacts.json
+
+Dump a per-email JSONL corpus for an LLM (no contacts DB):
+
+    mc import --llm -i mailbox.mbox -o emails.jsonl
+
+Export filtered contacts to a vCard:
+
+    mc export -i data/contacts.json --type customer,investor -o leads.vcf
+
+Export filtered contacts to CSV:
+
+    mc export -i data/contacts.json --company Intel,AMD --min-emails 5 -o intel_amd.csv
+
+Export in Outlook's CSV column layout:
+
+    mc export --outlook -i data/contacts.json -o outlook.csv
+
+Deduplicate contacts sharing a first+last name, rewriting in place:
+
+    mc dedup -i data/contacts.json -o data/contacts.json
 
 ## Building the contacts database
 
@@ -56,30 +99,26 @@ from), with automated/bulk senders, spam, and nameless entries filtered out,
 identities merged by display name, and company derived from the email domain.
 
 ```bash
-mc import -i "/path/to/Takeout/Mail/All mail Including Spam and Trash.mbox" -o data
-mc import -i "/path/to/archive.pst" -o data       # Outlook PST
-mc import -i "/path/to/contacts.vcf" -o data      # vCard (e.g. a Gmail export)
+mc import -i "/path/to/Takeout/Mail/All mail Including Spam and Trash.mbox" -o data/contacts.json
+mc import -i "/path/to/archive.pst" -o data/contacts.json    # Outlook PST
+mc import -i "/path/to/contacts.vcf" -o data/contacts.json   # vCard (e.g. a Gmail export)
 ```
 
-Importing a **vCard** adds its contacts directly (no message filtering): it maps
-N/FN, ORG, TITLE, TEL, ADR, every EMAIL, and `CATEGORIES` (a category matching a
-legal `type` value sets the type; a `friend` category sets the friend flag).
-Email counts default to 0 and a contact with no email address is skipped. This
-merges into the database like any other import, so you can fold a vCard export
-into an mbox-built database.
+`-i` and `-o` are required. The output format follows the `-o` extension:
+`.json` is the native database and `.csv` exports CSV. See `mc import -h` for
+all options.
 
 Add `--outlook` to import an **Outlook-format CSV** (the column layout Outlook
-and Google Contacts export): `mc import --outlook -i contacts.csv -o data`. It
+and Google Contacts export): `mc import --outlook -i contacts.csv -o data/contacts.json`. It
 reads First/Last Name, Job Title, Company, the E-mail Address columns, Business
 Phone, and the business address columns; `type`/`friend` and email counts are
 left blank/0.
 
-`-i` and `-o` are required. The output format follows the `-o` extension:
-`.json` is the native database, `.csv` exports CSV; a directory (as above)
-writes `contacts.json` inside it. See `mc import -h` for all options.
-
-PST reading uses [pypff](https://github.com/libyal/libpff) (`libpff-python`),
-installed automatically with the package.
+Importing a **vCard** adds its contacts directly (no message filtering): it maps
+N/FN, ORG, TITLE, TEL, ADR, every EMAIL, and `CATEGORIES` (a category matching a
+legal `type` value sets the type; a `friend` category sets the friend flag).This
+merges into the database like any other import, so you can fold a vCard export
+into an mbox-built database.
 
 ### What gets imported
 
@@ -154,7 +193,7 @@ mbox and PST.
 
 ```bash
 mc import --llm -i mailbox.mbox -o emails.jsonl
-mc import --llm -i archive.pst  -o data            # writes data/emails.jsonl
+mc import --llm -i archive.pst  -o emails.jsonl    # works on PST too
 ```
 
 The JSONL is streamed as messages are read, so it scales to very large mailboxes
