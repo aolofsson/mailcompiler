@@ -475,11 +475,17 @@ def _decode_part(part):
         return ""
 
 
-def _message_text(m):
+def _cap(text, cap):
+    """Truncate text to `cap` bytes/chars (cap=None means no limit)."""
+    return text if cap is None else text[:cap]
+
+
+def _message_text(m, cap=BODY_CAP):
     """Return a message's plain-text body (HTML stripped if needed), capped.
 
     Uses the legacy email API (walk over parts) so it is lenient with the messy,
-    possibly truncated messages produced by the capped mbox capture.
+    possibly truncated messages produced by the capped mbox capture. `cap=None`
+    keeps the full text.
     """
     plain = html = ""
     try:
@@ -496,9 +502,9 @@ def _message_text(m):
     except Exception:
         pass
     if plain:
-        return plain[:BODY_CAP]
+        return _cap(plain, cap)
     if html:
-        return _HTML_TAG.sub(" ", html)[:BODY_CAP]
+        return _cap(_HTML_TAG.sub(" ", html), cap)
     return ""
 
 
@@ -609,13 +615,13 @@ def _ingest_message(msg, recs, self_set):
     return True
 
 
-def iter_mbox_messages(path):
+def iter_mbox_messages(path, body_cap=BODY_CAP):
     """Yield normalized messages from a Gmail Takeout mbox (streamed).
 
-    Each message block is captured up to BODY_CAP bytes (headers + the start of
-    the body, where the text part and signature live) and fully MIME-parsed so a
-    plain-text body is available for phone extraction. Larger trailing content
-    (e.g. attachments) is skipped to bound memory/CPU.
+    Each message block is captured up to `body_cap` bytes (headers + body) and
+    fully MIME-parsed so a plain-text body is available. The default cap keeps
+    only the start of the body (where the signature lives) to bound memory/CPU;
+    `body_cap=None` captures the whole message (full body, e.g. for --llm).
     """
     parser = Parser()
 
@@ -627,13 +633,14 @@ def iter_mbox_messages(path):
         except Exception:
             dt = None
         return {
+            "subject": dec(m.get("Subject") or ""),
             "from": getaddresses(m.get_all("From", [])),
             "to": getaddresses(m.get_all("To", []) + m.get_all("Cc", [])),
             "date": dt,
             "is_sent": "Sent" in labels,
             "is_spam": "Spam" in labels,
             "self_hints": [a for _, a in getaddresses(m.get_all("Delivered-To", [])) if a],
-            "body": _message_text(m),
+            "body": _message_text(m, body_cap),
         }
 
     with open(path, "r", encoding="latin-1", errors="replace") as fh:
@@ -646,7 +653,7 @@ def iter_mbox_messages(path):
                 buf = []
                 size = 0
                 continue
-            if size < BODY_CAP:       # capture headers + capped body
+            if body_cap is None or size < body_cap:   # headers + (capped) body
                 buf.append(line)
                 size += len(line)
         if buf:
@@ -682,8 +689,8 @@ def _pst_date(message):
     return None
 
 
-def _pst_body(message):
-    """Return a pypff message's plain-text body (capped), or ''."""
+def _pst_body(message, cap=BODY_CAP):
+    """Return a pypff message's plain-text body (capped; None = full), or ''."""
     try:
         body = message.plain_text_body
     except Exception:
@@ -692,10 +699,10 @@ def _pst_body(message):
         return ""
     if isinstance(body, bytes):
         body = body.decode("utf-8", "replace")
-    return body[:BODY_CAP]
+    return _cap(body, cap)
 
 
-def _pst_message_fields(message, folder_name):
+def _pst_message_fields(message, folder_name, body_cap=BODY_CAP):
     """Normalize one pypff message (in `folder_name`) into a message dict.
 
     Prefers the original RFC822 transport headers (present for most mail) and
@@ -706,7 +713,7 @@ def _pst_message_fields(message, folder_name):
     fname = (folder_name or "").strip().lower()
     is_sent = fname in PST_SENT_FOLDERS
     is_spam = fname in PST_SPAM_FOLDERS
-    body = _pst_body(message)
+    body = _pst_body(message, body_cap)
 
     try:
         headers = message.transport_headers
@@ -720,6 +727,7 @@ def _pst_message_fields(message, folder_name):
         except Exception:
             dt = None
         return {
+            "subject": dec(m.get("Subject") or ""),
             "from": getaddresses(m.get_all("From", [])),
             "to": getaddresses(m.get_all("To", []) + m.get_all("Cc", [])),
             "date": dt,
@@ -737,6 +745,7 @@ def _pst_message_fields(message, folder_name):
     if "@" not in email:
         email = ""
     return {
+        "subject": getattr(message, "subject", None) or "",
         "from": [(name or "", email)],
         "to": [],
         "date": _pst_date(message),
@@ -747,7 +756,7 @@ def _pst_message_fields(message, folder_name):
     }
 
 
-def _walk_pst_folder(folder):
+def _walk_pst_folder(folder, body_cap=BODY_CAP):
     """Recursively yield normalized messages from a pypff folder."""
     try:
         name = folder.name or ""
@@ -762,7 +771,7 @@ def _walk_pst_folder(folder):
             message = folder.get_sub_message(i)
         except Exception:
             continue
-        yield _pst_message_fields(message, name)
+        yield _pst_message_fields(message, name, body_cap)
     try:
         n_sub = folder.number_of_sub_folders
     except Exception:
@@ -772,10 +781,10 @@ def _walk_pst_folder(folder):
             sub = folder.get_sub_folder(i)
         except Exception:
             continue
-        yield from _walk_pst_folder(sub)
+        yield from _walk_pst_folder(sub, body_cap)
 
 
-def iter_pst_messages(path):
+def iter_pst_messages(path, body_cap=BODY_CAP):
     """Yield normalized messages from an Outlook PST (requires pypff)."""
     try:
         import pypff
@@ -785,9 +794,70 @@ def iter_pst_messages(path):
     pst = pypff.file()
     pst.open(path)
     try:
-        yield from _walk_pst_folder(pst.get_root_folder())
+        yield from _walk_pst_folder(pst.get_root_folder(), body_cap)
     finally:
         pst.close()
+
+
+# ---- LLM corpus export ------------------------------------------------------
+def _format_addrs(pairs):
+    """Render (name, addr) pairs as a readable string, RFC2047 names decoded."""
+    out = []
+    for name, addr in pairs:
+        name = dec(name).strip()
+        if name and addr:
+            out.append(f"{name} <{addr}>")
+        elif addr:
+            out.append(addr)
+        elif name:
+            out.append(name)
+    return ", ".join(out)
+
+
+def _is_noreply(pairs):
+    """True if any sender address/name looks like a no-reply address."""
+    for name, addr in pairs:
+        blob = f"{name} {addr}".lower()
+        if "noreply" in blob or "no-reply" in blob:
+            return True
+    return False
+
+
+def _resolve_llm_out(out):
+    """Resolve the JSONL corpus path: a directory -> emails.jsonl inside it; a
+    file without a .jsonl/.json suffix gets .jsonl appended."""
+    out = os.path.abspath(out)
+    if os.path.isdir(out) or out.endswith(os.sep):
+        return os.path.join(out, "emails.jsonl")
+    if os.path.splitext(out)[1].lower() not in (".jsonl", ".json"):
+        out += ".jsonl"
+    return out
+
+
+def dump_llm(src, out_path):
+    """Stream a per-email JSONL corpus from a normalized-message source.
+
+    One JSON object per line: subject/from/to/date/body. No-reply senders are
+    skipped. Returns the number of records written.
+    """
+    outdir = os.path.dirname(out_path)
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
+    n = 0
+    with open(out_path, "w", encoding="utf-8") as fh:
+        for msg in src:
+            if _is_noreply(msg["from"]):
+                continue
+            rec = {
+                "subject": msg.get("subject", ""),
+                "from": _format_addrs(msg["from"]),
+                "to": _format_addrs(msg["to"]),
+                "date": msg["date"].isoformat() if msg["date"] else "",
+                "body": msg.get("body", ""),
+            }
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            n += 1
+    return n
 
 
 # ---- commands ---------------------------------------------------------------
@@ -801,6 +871,17 @@ def cmd_import(args):
     if not os.path.isfile(path):
         sys.exit("error: input not found: %s" % path)
 
+    pst = path.lower().endswith(".pst")
+
+    # --llm: dump a per-email JSONL corpus (full bodies) and skip the contacts DB.
+    if args.llm:
+        src = (iter_pst_messages(path, body_cap=None) if pst
+               else iter_mbox_messages(path, body_cap=None))
+        out_path = _resolve_llm_out(args.out)
+        n = dump_llm(src, out_path)
+        sys.stderr.write(f"Wrote {n:,} email records to {out_path}\n")
+        return
+
     blacklist = set()
     if args.blacklist:
         if not os.path.isfile(args.blacklist):
@@ -812,8 +893,7 @@ def cmd_import(args):
     n_skip_spam = 0
 
     # Pick the reader by extension: .pst -> Outlook, otherwise mbox.
-    src = (iter_pst_messages(path) if path.lower().endswith(".pst")
-           else iter_mbox_messages(path))
+    src = iter_pst_messages(path) if pst else iter_mbox_messages(path)
     for msg in src:
         n_msgs += 1
         if not _ingest_message(msg, recs, self_set):
@@ -992,12 +1072,16 @@ def parse_args(argv=None):
                     help="path to the .mbox or .pst file to import")
     sc.add_argument("-o", dest="out", required=True,
                     help="output path: .json (native) or .csv (export); a "
-                         "directory writes contacts.json")
+                         "directory writes contacts.json. With --llm, the JSONL "
+                         "corpus path (directory writes emails.jsonl)")
     sc.add_argument("--blacklist", dest="blacklist", metavar="PATH",
                     help="file of domains to exclude from contacts (one per "
                          "line; '#' comments and blank lines ignored)")
     sc.add_argument("-f", "--force", action="store_true",
                     help="overwrite the output file instead of merging into it")
+    sc.add_argument("--llm", action="store_true",
+                    help="instead of the contacts DB, write a per-email JSONL "
+                         "corpus (subject/from/to/date/body) for LLM use")
     sc.set_defaults(func=cmd_import)
 
     # mc list -i CONTACTS [filters...]

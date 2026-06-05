@@ -101,6 +101,22 @@ accumulate multiple mailboxes, without losing manual annotations.
 Use `-f` / `--force` to ignore the existing file and write a fresh one instead
 (this discards any manual edits such as `vip`).
 
+### Dump for an LLM
+
+`mc import --llm` skips the contacts database and instead writes a per-email
+**JSONL** corpus (one JSON object per line) for feeding to an LLM. Each record is
+`{subject, from, to, date, body}` with the full body, HTML stripped to text.
+Every message is included except obvious `no-reply` senders, and it works on both
+mbox and PST.
+
+```bash
+mc import --llm -i mailbox.mbox -o emails.jsonl
+mc import --llm -i archive.pst  -o data            # writes data/emails.jsonl
+```
+
+The JSONL is streamed as messages are read, so it scales to very large mailboxes
+without holding everything in memory.
+
 ## Querying contacts
 
 `mc list` selects a subset of contacts by per-column criteria and prints

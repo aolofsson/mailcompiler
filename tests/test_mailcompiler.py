@@ -1,5 +1,6 @@
 """Unit tests for the mbox contact import helpers."""
 
+import json
 import os
 import tempfile
 from collections import defaultdict
@@ -9,6 +10,7 @@ from mailcompiler.mailcompiler import (
     person_to_row, load_rows, write_rows,
     Rec, _ingest_message, _pst_message_fields, _MAPI_SENDER_SMTP,
     _signature_text, _extract_phones,
+    _format_addrs, _is_noreply, dump_llm,
 )
 
 
@@ -291,6 +293,51 @@ class TestExtractPhones:
     def test_non_phone_not_matched(self):
         body = "--\nOrder #1234567 shipped on 2024-01-02\n"
         assert _extract_phones(body) == []
+
+
+def _llm_msg(subject="", frm=None, to=None, date=None, body=""):
+    return {"subject": subject, "from": frm or [], "to": to or [],
+            "date": date, "is_sent": False, "is_spam": False,
+            "self_hints": [], "body": body}
+
+
+class TestLlmCorpus:
+    def test_format_addrs(self):
+        pairs = [("Bob", "bob@x.com"), ("", "c@y.com")]
+        assert _format_addrs(pairs) == "Bob <bob@x.com>, c@y.com"
+
+    def test_format_addrs_decodes_name(self):
+        pairs = [("=?utf-8?q?Jos=C3=A9?=", "jose@x.com")]
+        assert _format_addrs(pairs) == "José <jose@x.com>"
+
+    def test_is_noreply(self):
+        assert _is_noreply([("Svc", "no-reply@svc.com")])
+        assert _is_noreply([("noreply", "x@y.com")])
+        assert not _is_noreply([("Bob", "bob@x.com")])
+
+    def test_dump_llm_jsonl(self):
+        from datetime import datetime
+        msgs = [
+            _llm_msg("Hi", [("Bob", "bob@x.com")], [("Me", "me@self.com")],
+                     None, "hello"),
+            _llm_msg("Promo", [("N", "no-reply@svc.com")], [], None, "buy"),
+            _llm_msg("Re: Hi", [("Ann", "ann@y.com")], [],
+                     datetime(2024, 5, 5, 9, 0, 0), "thanks"),
+        ]
+        fd, path = tempfile.mkstemp(suffix=".jsonl")
+        os.close(fd)
+        try:
+            n = dump_llm(iter(msgs), path)
+            lines = [json.loads(ln) for ln in open(path) if ln.strip()]
+        finally:
+            os.remove(path)
+        assert n == 2                                   # no-reply skipped
+        assert {ln["subject"] for ln in lines} == {"Hi", "Re: Hi"}
+        first = lines[0]
+        assert set(first) == {"subject", "from", "to", "date", "body"}
+        assert first["from"] == "Bob <bob@x.com>"
+        assert first["body"] == "hello"
+        assert lines[1]["date"] == "2024-05-05T09:00:00"
 
 
 class _Entry:
