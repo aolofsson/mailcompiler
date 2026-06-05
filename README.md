@@ -1,8 +1,6 @@
 ![MailCompiler](docs/postverket.svg)
 
-MailCompiler is a utility for reclaiming control over emails and contacts via
-automatic imports from .mbox and .pst exports into a human readable JSON
-database.
+MailCompiler is a simple Python program for: importing data from an email archives (.mbox and .pst) into into a human readable local JSON file/databsae and for converting between different contact file formats (VCARD, CSV).
 
 ## Motivation
 - You need to own your data!
@@ -32,7 +30,7 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-## MC Commandline Utility
+## MC Email Utility
 
 The MailCompiler command line utility is called 'mc'
 

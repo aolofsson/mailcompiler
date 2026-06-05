@@ -27,7 +27,7 @@ CONTACTS = [
 
 def crit(**kw):
     """Build a criteria dict via the real arg parser for fidelity."""
-    argv = ["export", "-i", "x.csv", "-o", "out.csv"]
+    argv = ["-i", "x.json", "-o", "out.csv"]
     for k, v in kw.items():
         argv += ["--" + k.replace("_", "-"), str(v)]
     return build_criteria(parse_args(argv))
@@ -52,7 +52,7 @@ class TestTextFilters:
         assert run(email_domain="northwind.com") == ["Dana"]
 
 
-_BASE = ["export", "-i", "x.csv", "-o", "out.csv"]
+_BASE = ["-i", "x.json", "-o", "out.csv"]
 
 
 class TestTypeFilter:

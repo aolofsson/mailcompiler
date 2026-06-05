@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """mailcompiler (mc): build and query a contacts database.
 
-Single CLI with one function per operation, dispatched as a subcommand:
-  mc import  -i MBOX|PST|VCF -o OUT [...]       build/merge the contacts DB
-  mc export  -i CONTACTS -o OUT.{csv,vcf}       export matching records
-  mc dedup   -i CONTACTS -o OUT                 merge same-name contacts
+Single CLI with no subcommand: the operation is inferred from the -i/-o
+formats (taken from the file extension, or forced with --iformat/--oformat):
+  mc -i MBOX|PST|VCF -o DB.json [...]      import/merge into the contacts DB
+  mc -i CSV --iformat outlook -o DB.json   import an Outlook/Google CSV
+  mc -i DB.json -o OUT.{csv,vcf} [...]     export matching records
+  mc -i DB.json -o OUT.json --dedup        merge same-name contacts
+  mc -i MBOX|PST -o OUT.jsonl --llm        dump a per-email JSONL corpus
 
-Import accepts a Gmail Takeout .mbox, an Outlook .pst, or a vCard .vcf/.vcd
-(chosen by extension).
-The database is JSON (the native format); pass -o something.csv to export CSV.
+JSON is the native database format. CSV and vCard are interchange formats:
+a CSV/vCard is an import source or an export target, never a database to
+operate on (so dedup/export read JSON). Outlook's CSV column layout is
+selected with --iformat/--oformat outlook.
 
 mbox import streams the file (only header blocks are parsed, bodies skipped),
 so a 21 GB mbox is handled in one pass with minimal memory. PST import uses
@@ -1223,15 +1227,16 @@ def parse_vcards(path):
 
 # ---- commands ---------------------------------------------------------------
 def _merge_and_write(args, new_rows):
-    """Merge contact rows into the DB at args.out (existing file + this batch)."""
-    cpath = _resolve_db_out(args.out)
+    """Merge contact rows into the DB at args.output (existing file + batch)."""
+    cpath = _resolve_db_out(args.output)
     outdir = os.path.dirname(cpath)
     if outdir:
         os.makedirs(outdir, exist_ok=True)
-    # Merge into any existing file: counts overwritten with this import, emails
-    # and sources union, date range widens, hand-edited fields preserved; rows
-    # only in the old file kept. -f/--force ignores the existing file.
-    merged = {} if args.force else read_existing_rows(cpath)
+    # --merge folds this import into an existing file: counts overwritten with
+    # this import, emails and sources union, date range widens, hand-edited
+    # fields preserved, rows only in the old file kept. Without --merge the
+    # output is written fresh (any existing file is overwritten).
+    merged = read_existing_rows(cpath) if args.merge else {}
     n_existing = len(merged)
     n_new = n_updated = 0
     for row in new_rows:
@@ -1252,15 +1257,27 @@ def _merge_and_write(args, new_rows):
         r["first_name"].lower(),
     ))
     write_rows(cpath, rows)
-    verb = "Overwrote" if args.force else "Merged into"
+    verb = "Merged into" if args.merge else "Wrote"
     sys.stderr.write(
         f"\n{verb} {cpath}\n"
         f"  {n_existing:,} existing + {n_new:,} new "
         f"({n_updated:,} updated) = {len(rows):,} contacts.\n")
 
 
-def cmd_import(args):
-    """Import a Gmail mbox, Outlook PST, or vCard (args.input) into the DB."""
+def cmd_dump_llm(args, ifmt):
+    """Dump a per-email JSONL corpus (full bodies) from an mbox/PST; no DB."""
+    path = args.input
+    if not os.path.isfile(path):
+        sys.exit("error: input not found: %s" % path)
+    src = (iter_pst_messages(path, body_cap=None) if ifmt == "pst"
+           else iter_mbox_messages(path, body_cap=None))
+    out_path = _resolve_llm_out(args.output)
+    n = dump_llm(src, out_path)
+    sys.stderr.write(f"Wrote {n:,} email records to {out_path}\n")
+
+
+def cmd_import(args, ifmt):
+    """Import a mailbox, vCard, or Outlook CSV (args.input) into the JSON DB."""
     path = args.input
     # Self addresses are auto-detected: the mbox Delivered-To header / the From
     # of Sent-folder (or Sent-labeled) mail.
@@ -1269,24 +1286,8 @@ def cmd_import(args):
     if not os.path.isfile(path):
         sys.exit("error: input not found: %s" % path)
 
-    pst = path.lower().endswith(".pst")
-    vcard = path.lower().endswith((".vcf", ".vcd"))
-
-    # --llm: dump a per-email JSONL corpus (full bodies) and skip the contacts DB.
-    if args.llm:
-        if vcard or args.outlook:
-            sys.exit("error: --llm requires an mbox or PST input")
-        src = (iter_pst_messages(path, body_cap=None) if pst
-               else iter_mbox_messages(path, body_cap=None))
-        out_path = _resolve_llm_out(args.out)
-        n = dump_llm(src, out_path)
-        sys.stderr.write(f"Wrote {n:,} email records to {out_path}\n")
-        return
-
-    # --outlook: read an Outlook-format CSV straight into contact rows.
-    if args.outlook:
-        if not path.lower().endswith(".csv"):
-            sys.exit("error: --outlook expects a .csv input file")
+    # Outlook CSV: read the Outlook column layout straight into contact rows.
+    if ifmt == "outlook":
         new_rows = parse_outlook_csv(path)
         sys.stderr.write(
             f"Parsed {len(new_rows):,} contacts from {os.path.basename(path)}.\n")
@@ -1294,13 +1295,14 @@ def cmd_import(args):
         return
 
     # vCard input: contacts come straight from the cards (no message pipeline).
-    if vcard:
+    if ifmt == "vcard":
         new_rows = parse_vcards(path)
         sys.stderr.write(
             f"Parsed {len(new_rows):,} contacts from {os.path.basename(path)}.\n")
         _merge_and_write(args, new_rows)
         return
 
+    pst = ifmt == "pst"
     blacklist = set()
     if args.blacklist:
         if not os.path.isfile(args.blacklist):
@@ -1416,14 +1418,9 @@ def cmd_import(args):
     _merge_and_write(args, new_rows)
 
 
-def cmd_export(args):
-    """Export matching contact records to CSV or vCard (.csv/.vcf, by -o suffix)."""
+def cmd_export(args, ofmt):
+    """Export matching contact records as CSV, Outlook CSV, or vCard."""
     out = args.output
-    ext = os.path.splitext(out)[1].lower()
-    if ext not in (".csv", ".vcf"):
-        sys.exit("error: -o must end in .csv or .vcf")
-    if args.outlook and ext != ".csv":
-        sys.exit("error: --outlook only applies to .csv output")
     if args.type:
         bad = [t for t in (_csv_set(args.type) or set()) if t not in TYPE_VALUES]
         if bad:
@@ -1436,9 +1433,9 @@ def cmd_export(args):
     outdir = os.path.dirname(os.path.abspath(out))
     if outdir:
         os.makedirs(outdir, exist_ok=True)
-    if ext == ".vcf":
+    if ofmt == "vcard":
         write_vcards(out, selected)
-    elif args.outlook:
+    elif ofmt == "outlook":
         write_outlook_csv(out, selected)
     else:
         write_csv_rows(out, selected)
@@ -1462,84 +1459,137 @@ def cmd_dedup(args):
         f"({len(rows) - len(merged):,} merged away) -> {out_path}\n")
 
 
+# Recognized file formats. JSON is the native database; the rest are import
+# sources / export targets. "outlook" is the Outlook/Google CSV column layout.
+FORMATS = ["json", "csv", "outlook", "vcard", "mbox", "pst", "jsonl"]
+
+# How a file's format is inferred from its extension (unless --iformat/--oformat
+# overrides it). A .csv defaults to native CSV; "outlook" must be asked for.
+_EXT_FORMAT = {".json": "json", ".csv": "csv", ".vcf": "vcard", ".vcd": "vcard",
+               ".mbox": "mbox", ".pst": "pst", ".jsonl": "jsonl"}
+
+
+def resolve_format(path, override):
+    """Resolve a file's format: an explicit --iformat/--oformat wins, otherwise
+    infer from the extension. Returns a FORMATS value, or None if unknown."""
+    if override:
+        return override
+    return _EXT_FORMAT.get(os.path.splitext(path)[1].lower())
+
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser(
         prog="mc",
-        description="mailcompiler: build and query a contacts database.",
-    )
-    sub = p.add_subparsers(dest="command", required=True)
-
-    # mc import -i MBOX -o OUT [...]
-    sc = sub.add_parser(
-        "import", help="import a Gmail mbox, Outlook PST, or vCard (.vcf)")
-    sc.add_argument("-i", "--input", dest="input", required=True,
-                    help="path to the .mbox, .pst, or .vcf/.vcd file to import")
-    sc.add_argument("-o", dest="out", required=True,
-                    help="output file path: .json (native) or .csv (export). "
-                         "With --llm, the JSONL corpus file path")
-    sc.add_argument("--blacklist", dest="blacklist", metavar="PATH",
-                    help="file of domains to exclude from contacts (one per "
-                         "line; '#' comments and blank lines ignored)")
-    sc.add_argument("-f", "--force", action="store_true",
-                    help="overwrite the output file instead of merging into it")
-    sc.add_argument("--llm", action="store_true",
-                    help="instead of the contacts DB, write a per-email JSONL "
-                         "corpus (subject/from/to/date/body) for LLM use")
-    sc.add_argument("--outlook", action="store_true",
-                    help="treat a .csv input as Outlook's CSV column layout")
-    sc.set_defaults(func=cmd_import)
-
-    # mc export -i CONTACTS -o OUT.{csv,vcf} [filters...]
-    ex = sub.add_parser(
-        "export", help="export matching contacts to CSV or vCard")
-    ex.add_argument("-i", "--input", dest="input", required=True,
-                    help="path to the contacts JSON or CSV from 'mc import'")
-    ex.add_argument("-o", "--output", dest="output", required=True,
-                    help="output file; .csv (all columns) or .vcf (vCard 3.0)")
-    ex.add_argument("--outlook", action="store_true",
-                    help="write .csv in Outlook's CSV column layout")
-    ex.add_argument("--type", dest="type",
-                    help="match contact type against any of LIST (%s)"
-                         % "/".join(TYPE_VALUES))
-    ex.add_argument("--company", help="match company against any of LIST")
-    ex.add_argument("--first-name", dest="first_name",
-                    help="match first name against any of LIST")
-    ex.add_argument("--last-name", dest="last_name",
-                    help="match last name against any of LIST")
-    ex.add_argument("--email-domain", dest="email_domain",
-                    help="match primary email domain against any of LIST")
-    ex.add_argument("--min-emails", type=int, help="minimum num_emails")
-    ex.add_argument("--max-emails", type=int, help="maximum num_emails")
-    ex.add_argument("--min-sent", type=int, help="minimum num_sent")
-    ex.add_argument("--max-sent", type=int, help="maximum num_sent")
-    ex.add_argument("--min-received", type=int, help="minimum num_received")
-    ex.add_argument("--max-received", type=int, help="maximum num_received")
-    ex.add_argument("--last-after", dest="last_after", metavar="YYYY-MM-DD",
-                    help="last_interaction on or after this date")
-    ex.add_argument("--last-before", dest="last_before", metavar="YYYY-MM-DD",
-                    help="last_interaction on or before this date")
-    ex.add_argument("--first-after", dest="first_after", metavar="YYYY-MM-DD",
-                    help="first_interaction on or after this date")
-    ex.add_argument("--first-before", dest="first_before", metavar="YYYY-MM-DD",
-                    help="first_interaction on or before this date")
-    ex.set_defaults(func=cmd_export)
-
-    # mc dedup -i CONTACTS -o OUT
-    dd = sub.add_parser(
-        "dedup", help="deduplicate contacts that share a first+last name")
-    dd.add_argument("-i", "--input", dest="input", required=True,
-                    help="path to the contacts JSON or CSV to deduplicate")
-    dd.add_argument("-o", "--output", dest="output", required=True,
-                    help="output file path (.json/.csv); may equal -i to "
-                         "rewrite in place")
-    dd.set_defaults(func=cmd_dedup)
-
+        description="mailcompiler: build and query a contacts database. The "
+                    "operation is inferred from the -i/-o formats: a mailbox, "
+                    "vCard, or Outlook CSV input imports into a JSON DB; a JSON "
+                    "input exports (-o .csv/.vcf) or, with --dedup, "
+                    "deduplicates (-o .json).")
+    p.add_argument("-i", "--input", dest="input", required=True,
+                   help="input path: a mailbox (.mbox/.pst), a vCard "
+                        "(.vcf/.vcd), an Outlook CSV (--iformat outlook), or a "
+                        "contacts .json")
+    p.add_argument("-o", "--output", dest="output", required=True,
+                   help="output path: a .json contacts DB, a .csv/.vcf export, "
+                        "or a .jsonl corpus (with --llm)")
+    p.add_argument("--iformat", choices=FORMATS,
+                   help="force the input format instead of inferring it from "
+                        "the extension; 'outlook' reads an Outlook/Google CSV")
+    p.add_argument("--oformat", choices=FORMATS,
+                   help="force the output format instead of inferring it from "
+                        "the extension; 'outlook' writes Outlook's CSV layout")
+    p.add_argument("--dedup", action="store_true",
+                   help="merge contacts sharing a first+last name (json -> json)")
+    p.add_argument("--merge", action="store_true",
+                   help="merge the import into an existing output DB (preserving "
+                        "manual edits) instead of overwriting it")
+    p.add_argument("--llm", action="store_true",
+                   help="dump a per-email JSONL corpus (subject/from/to/date/"
+                        "body) from an mbox/PST instead of building the DB")
+    p.add_argument("--blacklist", dest="blacklist", metavar="PATH",
+                   help="file of domains to exclude from contacts (one per "
+                        "line; '#' comments and blank lines ignored)")
+    # Export filters (apply when the operation resolves to an export).
+    p.add_argument("--type", dest="type",
+                   help="match contact type against any of LIST (%s)"
+                        % "/".join(TYPE_VALUES))
+    p.add_argument("--company", help="match company against any of LIST")
+    p.add_argument("--first-name", dest="first_name",
+                   help="match first name against any of LIST")
+    p.add_argument("--last-name", dest="last_name",
+                   help="match last name against any of LIST")
+    p.add_argument("--email-domain", dest="email_domain",
+                   help="match primary email domain against any of LIST")
+    p.add_argument("--min-emails", type=int, help="minimum num_emails")
+    p.add_argument("--max-emails", type=int, help="maximum num_emails")
+    p.add_argument("--min-sent", type=int, help="minimum num_sent")
+    p.add_argument("--max-sent", type=int, help="maximum num_sent")
+    p.add_argument("--min-received", type=int, help="minimum num_received")
+    p.add_argument("--max-received", type=int, help="maximum num_received")
+    p.add_argument("--last-after", dest="last_after", metavar="YYYY-MM-DD",
+                   help="last_interaction on or after this date")
+    p.add_argument("--last-before", dest="last_before", metavar="YYYY-MM-DD",
+                   help="last_interaction on or before this date")
+    p.add_argument("--first-after", dest="first_after", metavar="YYYY-MM-DD",
+                   help="first_interaction on or after this date")
+    p.add_argument("--first-before", dest="first_before", metavar="YYYY-MM-DD",
+                   help="first_interaction on or before this date")
     return p.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
-    return args.func(args)
+    ifmt = resolve_format(args.input, args.iformat)
+    ofmt = resolve_format(args.output, args.oformat)
+    if ifmt is None:
+        sys.exit("error: cannot determine the format of input %s; "
+                 "pass --iformat" % args.input)
+    if ofmt is None:
+        sys.exit("error: cannot determine the format of output %s; "
+                 "pass --oformat" % args.output)
+
+    # --llm: per-email JSONL dump from a mailbox (no contacts DB).
+    if args.llm:
+        if ifmt not in ("mbox", "pst"):
+            sys.exit("error: --llm requires an mbox or PST input")
+        if ofmt != "jsonl":
+            sys.exit("error: --llm writes a .jsonl corpus (-o ....jsonl)")
+        if args.dedup or args.merge:
+            sys.exit("error: --llm cannot be combined with --dedup/--merge")
+        return cmd_dump_llm(args, ifmt)
+
+    # Import: a mailbox / vCard / Outlook CSV -> the native JSON DB.
+    if ifmt in ("mbox", "pst", "vcard", "outlook"):
+        if ofmt != "json":
+            sys.exit("error: importing %s writes the native JSON database, so "
+                     "-o must be .json (export CSV/vCard from a JSON DB "
+                     "instead)" % ifmt)
+        if args.dedup:
+            sys.exit("error: --dedup applies to a json -> json database, "
+                     "not an import")
+        return cmd_import(args, ifmt)
+
+    # JSON contacts DB input: dedup (json -> json) or export (-> csv/vcf).
+    if ifmt == "json":
+        if args.merge:
+            sys.exit("error: --merge applies to an import, not a json input")
+        if ofmt == "json":
+            if not args.dedup:
+                sys.exit("error: json -> json requires --dedup; to export, "
+                         "use a .csv or .vcf output")
+            return cmd_dedup(args)
+        if ofmt in ("csv", "outlook", "vcard"):
+            if args.dedup:
+                sys.exit("error: --dedup only applies to a json -> json output")
+            return cmd_export(args, ofmt)
+        sys.exit("error: cannot write %s from a JSON contacts DB" % ofmt)
+
+    # Native CSV input: not a database we can dedup or export.
+    if ifmt == "csv":
+        sys.exit("error: CSV is not a contacts-database format. To import an "
+                 "Outlook/Google CSV pass --iformat outlook (-> a .json DB); "
+                 "to export or deduplicate, use a JSON DB as input.")
+    sys.exit("error: unsupported input format: %s" % ifmt)
 
 
 if __name__ == "__main__":
