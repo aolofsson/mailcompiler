@@ -2,10 +2,12 @@
 
 import os
 import tempfile
+from collections import defaultdict
 
 from mailcompiler.mailcompiler import (
     clean, company_from, is_bot, split_name, is_blacklisted, merge_row,
     person_to_row, load_rows, write_rows,
+    Rec, _ingest_message, _pst_message_fields, _MAPI_SENDER_SMTP,
 )
 
 
@@ -189,3 +191,106 @@ class TestRoundTrip:
         assert r["num_sent"] == 2 and r["num_received"] == 1
         assert r["vip"] == "Y" and r["source"] == "a.mbox | b.mbox"
         assert r["last_interaction"] == "2024-05-05"
+
+
+def _msg(frm=None, to=None, is_sent=False, is_spam=False, self_hints=None):
+    return {"from": frm or [], "to": to or [], "date": None,
+            "is_sent": is_sent, "is_spam": is_spam,
+            "self_hints": self_hints or []}
+
+
+class TestIngestMessage:
+    def test_received_counts_sender(self):
+        recs = defaultdict(Rec)
+        assert _ingest_message(_msg(frm=[("Bob", "bob@x.com")]), recs, set())
+        assert recs["bob@x.com"].num_recv == 1
+        assert recs["bob@x.com"].num_sent == 0
+
+    def test_sent_counts_recipients_and_learns_self(self):
+        recs, ss = defaultdict(Rec), set()
+        _ingest_message(_msg(frm=[("Me", "me@self.com")],
+                             to=[("Bob", "bob@x.com")], is_sent=True), recs, ss)
+        assert "me@self.com" in ss          # self learned from sent From
+        assert recs["bob@x.com"].num_sent == 1
+        assert "me@self.com" not in recs    # self never a contact
+
+    def test_spam_skipped(self):
+        recs = defaultdict(Rec)
+        assert _ingest_message(_msg(frm=[("Bob", "bob@x.com")], is_spam=True),
+                               recs, set()) is False
+        assert not recs
+
+    def test_self_recipient_skipped(self):
+        recs = defaultdict(Rec)
+        _ingest_message(_msg(frm=[("Me", "me@self.com")],
+                             to=[("Me", "me@self.com"), ("Bob", "bob@x.com")],
+                             is_sent=True), recs, {"me@self.com"})
+        assert list(recs) == ["bob@x.com"]
+
+    def test_self_sender_not_added(self):
+        recs = defaultdict(Rec)
+        # From is self -> treated as sent; the (empty) recipient list adds nobody.
+        _ingest_message(_msg(frm=[("Me", "me@self.com")]), recs, {"me@self.com"})
+        assert not recs
+
+
+class _Entry:
+    def __init__(self, t, v):
+        self.entry_type, self._v = t, v
+
+    def get_data_as_string(self):
+        return self._v
+
+
+class _RS:
+    def __init__(self, entries):
+        self._e = entries
+        self.number_of_entries = len(entries)
+
+    def get_entry(self, i):
+        return self._e[i]
+
+
+class _PstMsg:
+    def __init__(self, headers=None, sender_name=None, record_sets=None):
+        self.transport_headers = headers
+        self.sender_name = sender_name
+        self._rs = record_sets or []
+        self.number_of_record_sets = len(self._rs)
+        self.client_submit_time = None
+        self.delivery_time = None
+
+    def get_record_set(self, i):
+        return self._rs[i]
+
+
+class TestPstMessageFields:
+    HEADERS = ("From: Bob <bob@x.com>\nTo: Me <me@self.com>\n"
+               "Cc: C <c@y.com>\nDate: Wed, 03 Jun 2026 14:35:06 +0000\n\n")
+
+    def test_transport_headers_path(self):
+        f = _pst_message_fields(_PstMsg(headers=self.HEADERS), "Inbox")
+        assert f["from"] == [("Bob", "bob@x.com")]
+        assert ("Me", "me@self.com") in f["to"]
+        assert ("C", "c@y.com") in f["to"]
+        assert f["is_sent"] is False and f["is_spam"] is False
+        assert f["date"] is not None
+
+    def test_sent_and_junk_folders(self):
+        assert _pst_message_fields(_PstMsg(headers="From: a@b.com\n\n"),
+                                   "Sent Items")["is_sent"] is True
+        assert _pst_message_fields(_PstMsg(headers="From: a@b.com\n\n"),
+                                   "Junk Email")["is_spam"] is True
+
+    def test_mapi_fallback_sender(self):
+        m = _PstMsg(headers=None, sender_name="Carol",
+                    record_sets=[_RS([_Entry(_MAPI_SENDER_SMTP, "carol@z.com")])])
+        f = _pst_message_fields(m, "Inbox")
+        assert f["from"] == [("Carol", "carol@z.com")]
+        assert f["to"] == []
+
+    def test_mapi_fallback_nonsmtp_dropped(self):
+        m = _PstMsg(headers=None, sender_name="Carol",
+                    record_sets=[_RS([_Entry(_MAPI_SENDER_SMTP, "/O=EX/CN=carol")])])
+        f = _pst_message_fields(m, "Inbox")
+        assert f["from"] == [("Carol", "")]   # non-SMTP -> blanked, later skipped

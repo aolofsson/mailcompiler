@@ -25,20 +25,23 @@ Without installing, run it as a module: `python -m mailcompiler.mailcompiler <co
 
 ## Building the contacts database
 
-`mc import` parses a Gmail Takeout `.mbox` into `contacts.json`. Contacts are
-people you have corresponded with (sent to or heard from), with automated/bulk
-senders, spam, and nameless entries filtered out. Identities are merged by
-display name, and company is derived from the email domain.
+`mc import` parses a Gmail Takeout `.mbox` **or** an Outlook `.pst` (chosen by
+the `-i` file extension) into `contacts.json`. Contacts are people you have
+corresponded with (sent to or heard from), with automated/bulk senders, spam,
+and nameless entries filtered out. Identities are merged by display name, and
+company is derived from the email domain.
 
 ```bash
-mc import \
-  -i "/path/to/Takeout/Mail/All mail Including Spam and Trash.mbox" \
-  -o data
+mc import -i "/path/to/Takeout/Mail/All mail Including Spam and Trash.mbox" -o data
+mc import -i "/path/to/archive.pst" -o data       # Outlook PST
 ```
 
 `-i` and `-o` are required. The output format follows the `-o` extension:
 `.json` is the native database, `.csv` exports CSV; a directory (as above)
 writes `contacts.json` inside it. See `mc import -h` for all options.
+
+PST reading uses [pypff](https://github.com/libyal/libpff) (`libpff-python`),
+installed automatically with the package.
 
 ### What gets imported
 
@@ -47,10 +50,12 @@ sent mail to or who sent mail to you. Specifically, an address is imported only
 if **all** of these hold:
 
 - It is a recipient (`To`/`Cc`) of mail you sent, **or** the sender (`From`) of
-  mail you received (either direction qualifies).
-- The message is **not** in Spam (Spam-labeled mail is skipped).
-- It is **not one of your own addresses** (auto-detected from the `Delivered-To`
-  header and the `From` of `Sent`-labeled mail).
+  mail you received (either direction qualifies). For PST, "sent" mail is the
+  **Sent Items** folder.
+- The message is **not** spam: the Gmail `Spam` label, or for PST the **Junk
+  Email** folder, is skipped.
+- It is **not one of your own addresses** (auto-detected from the mbox
+  `Delivered-To` header and the `From` of sent mail).
 - It is **not an automated/bulk sender** -- e.g. `no-reply@`, `mailer-daemon`,
   `postmaster`, notifications, newsletters, marketing/unsubscribe addresses,
   `+`-tagged addresses (such as GitHub `reply+...`), or a bulk email-service /
@@ -65,7 +70,8 @@ Then, across all imported addresses:
   into one row; the most-used address becomes the primary email.
 - `company` is derived from the email domain (blank for free providers like
   gmail/yahoo/outlook), and each row records sent/received counts, the first and
-  last interaction dates, and the `source` mbox filename.
+  last interaction dates, and the `source` filename (the `.mbox`/`.pst` it came
+  from).
 
 Pass `--blacklist PATH` to exclude whole domains from the contacts. The file
 lists one domain per line (`#` comments and blank lines ignored); entries may be

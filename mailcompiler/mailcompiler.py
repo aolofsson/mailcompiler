@@ -2,13 +2,15 @@
 """mailcompiler (mc): build and query a contacts database.
 
 Single CLI with one function per operation, dispatched as a subcommand:
-  mc import  -i MBOX -o OUT [...]               build/merge the contacts DB
+  mc import  -i MBOX|PST -o OUT [...]           build/merge the contacts DB
   mc list    -i CONTACTS [filters...]           list matching addresses
 
+Import accepts a Gmail Takeout .mbox or an Outlook .pst (chosen by extension).
 The database is JSON (the native format); pass -o something.csv to export CSV.
 
-Import uses a streaming parser: only header blocks are parsed (bodies skipped),
-so a 21 GB mbox is handled in one pass with minimal memory.
+mbox import streams the file (only header blocks are parsed, bodies skipped),
+so a 21 GB mbox is handled in one pass with minimal memory. PST import uses
+pypff (libpff-python).
 
 Spec (confirmed with user):
   - Contacts = recipients (To/Cc) of mail I SENT, plus senders (From) of mail I
@@ -445,16 +447,239 @@ def select_addresses(contacts, all_emails):
     return out
 
 
+# ---- message ingestion ------------------------------------------------------
+# Each source (mbox / PST) yields a normalized message dict:
+#   {"from": [(name, addr), ...], "to": [(name, addr), ...]  (To+Cc),
+#    "date": <naive-UTC datetime or None>, "is_sent": bool, "is_spam": bool,
+#    "self_hints": [addr, ...]}  -- addresses known to be the account owner.
+
+# Outlook folder names that mark sent / spam mail (case-insensitive).
+PST_SENT_FOLDERS = {"sent items", "sent", "sent mail"}
+PST_SPAM_FOLDERS = {"junk email", "junk e-mail", "junk", "spam"}
+
+# MAPI property tags used by the PST fallback when there are no RFC822 headers.
+_MAPI_SENDER_NAME = 0x0C1A
+_MAPI_SENDER_SMTP = 0x5D01
+_MAPI_SENDER_EMAIL = 0x0C1F
+
+
+def _normalize_dt(dt):
+    """Coerce a datetime to naive UTC (or return None)."""
+    if dt is None:
+        return None
+    try:
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    except Exception:
+        return None
+    return dt
+
+
+def _ingest_message(msg, recs, self_set):
+    """Fold one normalized message into `recs`/`self_set`.
+
+    Returns False if the message was skipped (spam), True otherwise.
+    """
+    if msg["is_spam"]:
+        return False
+    for a in msg["self_hints"]:
+        if a:
+            self_set.add(a.lower())
+
+    from_emails = [addr.lower() for _, addr in msg["from"] if addr]
+    sent_by_me = msg["is_sent"] or any(a in self_set for a in from_emails)
+    dt = msg["date"]
+    if sent_by_me:
+        for a in from_emails:        # learn self addresses
+            self_set.add(a)
+        pairs, attr = msg["to"], "num_sent"
+    else:
+        pairs, attr = msg["from"], "num_recv"
+
+    for raw_name, addr in pairs:
+        addr = (addr or "").lower().strip()
+        if not addr or "@" not in addr or addr in self_set:
+            continue
+        r = recs[addr]
+        r.emails[addr] += 1
+        nm = dec(raw_name).strip()
+        if nm and "@" not in nm:
+            r.names[nm] += 1
+        setattr(r, attr, getattr(r, attr) + 1)
+        r.touch(dt)
+    return True
+
+
+def iter_mbox_messages(path):
+    """Yield normalized messages from a Gmail Takeout mbox (streamed)."""
+    parser = HeaderParser()
+
+    def normalize(block):
+        m = parser.parsestr("".join(block))
+        labels = {x.strip() for x in (m.get("X-Gmail-Labels") or "").split(",")}
+        try:
+            dt = _normalize_dt(parsedate_to_datetime(m.get("Date")))
+        except Exception:
+            dt = None
+        return {
+            "from": getaddresses(m.get_all("From", [])),
+            "to": getaddresses(m.get_all("To", []) + m.get_all("Cc", [])),
+            "date": dt,
+            "is_sent": "Sent" in labels,
+            "is_spam": "Spam" in labels,
+            "self_hints": [a for _, a in getaddresses(m.get_all("Delivered-To", [])) if a],
+        }
+
+    with open(path, "r", encoding="latin-1", errors="replace") as fh:
+        buf = []
+        in_header = True
+        for line in fh:
+            if SEP.match(line):
+                if buf:
+                    yield normalize(buf)
+                buf = []
+                in_header = True
+                continue
+            if in_header:
+                if line in ("\n", "\r\n"):
+                    in_header = False  # end of headers; ignore body
+                else:
+                    buf.append(line)
+        if buf:
+            yield normalize(buf)
+
+
+def _pst_record_value(message, entry_type):
+    """Return the string value of a MAPI property on a pypff message, or ''."""
+    try:
+        nsets = message.number_of_record_sets
+    except Exception:
+        return ""
+    for i in range(nsets):
+        try:
+            rs = message.get_record_set(i)
+            for j in range(rs.number_of_entries):
+                entry = rs.get_entry(j)
+                if entry.entry_type == entry_type:
+                    return (entry.get_data_as_string() or "").strip()
+        except Exception:
+            continue
+    return ""
+
+
+def _pst_date(message):
+    for attr in ("client_submit_time", "delivery_time"):
+        try:
+            dt = getattr(message, attr)
+        except Exception:
+            dt = None
+        if dt is not None:
+            return _normalize_dt(dt)
+    return None
+
+
+def _pst_message_fields(message, folder_name):
+    """Normalize one pypff message (in `folder_name`) into a message dict.
+
+    Prefers the original RFC822 transport headers (present for most mail) and
+    parses them like an mbox message; otherwise falls back to MAPI properties
+    for the sender. Recipients are only recovered from transport headers, so
+    Outlook-composed mail without headers contributes its sender only.
+    """
+    fname = (folder_name or "").strip().lower()
+    is_sent = fname in PST_SENT_FOLDERS
+    is_spam = fname in PST_SPAM_FOLDERS
+
+    try:
+        headers = message.transport_headers
+    except Exception:
+        headers = None
+
+    if headers:
+        m = HeaderParser().parsestr(headers)
+        try:
+            dt = _normalize_dt(parsedate_to_datetime(m.get("Date")))
+        except Exception:
+            dt = None
+        return {
+            "from": getaddresses(m.get_all("From", [])),
+            "to": getaddresses(m.get_all("To", []) + m.get_all("Cc", [])),
+            "date": dt,
+            "is_sent": is_sent,
+            "is_spam": is_spam,
+            "self_hints": [],
+        }
+
+    # MAPI fallback (no transport headers).
+    name = getattr(message, "sender_name", None) or \
+        _pst_record_value(message, _MAPI_SENDER_NAME)
+    email = (_pst_record_value(message, _MAPI_SENDER_SMTP)
+             or _pst_record_value(message, _MAPI_SENDER_EMAIL))
+    if "@" not in email:
+        email = ""
+    return {
+        "from": [(name or "", email)],
+        "to": [],
+        "date": _pst_date(message),
+        "is_sent": is_sent,
+        "is_spam": is_spam,
+        "self_hints": [],
+    }
+
+
+def _walk_pst_folder(folder):
+    """Recursively yield normalized messages from a pypff folder."""
+    try:
+        name = folder.name or ""
+    except Exception:
+        name = ""
+    try:
+        n_msgs = folder.number_of_sub_messages
+    except Exception:
+        n_msgs = 0
+    for i in range(n_msgs):
+        try:
+            message = folder.get_sub_message(i)
+        except Exception:
+            continue
+        yield _pst_message_fields(message, name)
+    try:
+        n_sub = folder.number_of_sub_folders
+    except Exception:
+        n_sub = 0
+    for i in range(n_sub):
+        try:
+            sub = folder.get_sub_folder(i)
+        except Exception:
+            continue
+        yield from _walk_pst_folder(sub)
+
+
+def iter_pst_messages(path):
+    """Yield normalized messages from an Outlook PST (requires pypff)."""
+    try:
+        import pypff
+    except ImportError:
+        sys.exit("error: reading .pst requires the 'libpff-python' package "
+                 "(pip install libpff-python)")
+    pst = pypff.file()
+    pst.open(path)
+    try:
+        yield from _walk_pst_folder(pst.get_root_folder())
+    finally:
+        pst.close()
+
+
 # ---- commands ---------------------------------------------------------------
 def cmd_import(args):
-    """Import a Gmail Takeout mbox (args.input) into a contacts CSV."""
-    mbox = args.input
-    # Self addresses are auto-detected from the mbox: the Delivered-To header
-    # (the account the export belongs to) plus the From of Sent-labeled mail.
+    """Import a Gmail mbox or Outlook PST (args.input) into the contacts DB."""
+    path = args.input
+    # Self addresses are auto-detected: the mbox Delivered-To header / the From
+    # of Sent-folder (or Sent-labeled) mail.
     self_set = set()
 
-    if not os.path.isfile(mbox):
-        sys.exit("error: mbox not found: %s" % mbox)
+    if not os.path.isfile(path):
+        sys.exit("error: input not found: %s" % path)
 
     blacklist = set()
     if args.blacklist:
@@ -463,88 +688,19 @@ def cmd_import(args):
         blacklist = load_blacklist(args.blacklist)
 
     recs = defaultdict(Rec)  # primary email -> Rec
-    parser = HeaderParser()
-
     n_msgs = 0
     n_skip_spam = 0
-    size = os.path.getsize(mbox)
 
-    with open(mbox, "r", encoding="latin-1", errors="replace") as fh:
-        buf = []
-        in_header = True
-        pos = 0  # bytes consumed (latin-1: 1 char == 1 byte)
-
-        def flush(block):
-            nonlocal n_msgs, n_skip_spam
-            if not block:
-                return
-            n_msgs += 1
-            msg = parser.parsestr("".join(block))
-            labels = (msg.get("X-Gmail-Labels") or "")
-            labset = {x.strip() for x in labels.split(",")}
-            if "Spam" in labset:
-                n_skip_spam += 1
-                return
-            # The account this export belongs to is "self".
-            for _, a in getaddresses(msg.get_all("Delivered-To", [])):
-                if a:
-                    self_set.add(a.lower())
-            try:
-                dt = parsedate_to_datetime(msg.get("Date"))
-                if dt is not None and dt.tzinfo is not None:
-                    dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
-            except Exception:
-                dt = None
-
-            from_addrs = [a.lower() for _, a in getaddresses(msg.get_all("From", []))]
-            to_addrs = getaddresses(msg.get_all("To", []) + msg.get_all("Cc", []))
-
-            sent_by_me = ("Sent" in labset) or any(a in self_set for a in from_addrs)
-            if sent_by_me:
-                # learn self addresses
-                for a in from_addrs:
-                    self_set.add(a)
-                for raw_name, addr in to_addrs:
-                    addr = addr.lower().strip()
-                    if not addr or "@" not in addr or addr in self_set:
-                        continue
-                    r = recs[addr]
-                    r.emails[addr] += 1
-                    nm = dec(raw_name).strip()
-                    if nm and "@" not in nm:
-                        r.names[nm] += 1
-                    r.num_sent += 1
-                    r.touch(dt)
-            else:
-                for raw_name, addr in getaddresses(msg.get_all("From", [])):
-                    addr = addr.lower().strip()
-                    if not addr or "@" not in addr or addr in self_set:
-                        continue
-                    r = recs[addr]
-                    r.emails[addr] += 1
-                    nm = dec(raw_name).strip()
-                    if nm and "@" not in nm:
-                        r.names[nm] += 1
-                    r.num_recv += 1
-                    r.touch(dt)
-
-        for line in fh:
-            pos += len(line)
-            if SEP.match(line):
-                flush(buf)
-                buf = []
-                in_header = True
-                if n_msgs and n_msgs % 50000 == 0:
-                    sys.stderr.write(
-                        f"  parsed {n_msgs:,} msgs ({pos/size*100:4.1f}%)\n")
-                    sys.stderr.flush()
-                continue
-            if in_header:
-                if line in ("\n", "\r\n"):
-                    in_header = False  # end of headers; ignore body
-                else:
-                    buf.append(line)
-        flush(buf)
+    # Pick the reader by extension: .pst -> Outlook, otherwise mbox.
+    src = (iter_pst_messages(path) if path.lower().endswith(".pst")
+           else iter_mbox_messages(path))
+    for msg in src:
+        n_msgs += 1
+        if not _ingest_message(msg, recs, self_set):
+            n_skip_spam += 1
+        if n_msgs % 50000 == 0:
+            sys.stderr.write(f"  parsed {n_msgs:,} messages\n")
+            sys.stderr.flush()
 
     sys.stderr.write(f"Done parsing: {n_msgs:,} messages, {n_skip_spam:,} spam skipped.\n")
     sys.stderr.write(f"Self addresses: {sorted(self_set)}\n")
@@ -651,7 +807,7 @@ def cmd_import(args):
     merged = {} if args.force else read_existing_rows(cpath)
     n_existing = len(merged)
     n_new = n_updated = 0
-    source = os.path.basename(mbox)
+    source = os.path.basename(path)
     for p in people:
         row = person_to_row(p, source)
         key = row["primary_email"].lower()
@@ -706,9 +862,9 @@ def parse_args(argv=None):
 
     # mc import -i MBOX -o OUT [...]
     sc = sub.add_parser(
-        "import", help="import a Gmail Takeout mbox into the contacts database")
+        "import", help="import a Gmail mbox or Outlook PST into the database")
     sc.add_argument("-i", "--input", dest="input", required=True,
-                    help="path to the Takeout .mbox file to import")
+                    help="path to the .mbox or .pst file to import")
     sc.add_argument("-o", dest="out", required=True,
                     help="output path: .json (native) or .csv (export); a "
                          "directory writes contacts.json")
