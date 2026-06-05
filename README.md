@@ -47,6 +47,57 @@ mc -i DB.json -o OUT.{csv,vcf} [filters]     export matching records
 mc -i DB.json -o OUT.json --dedup            merge same-name contacts
 ```
 
+## Database Record
+
+The database is a JSON array of contact records. Each record has the same 16
+fields, in this order:
+
+```json
+{
+  "type": "customer",
+  "friend": "",
+  "last_name": "Vale",
+  "first_name": "Jordan",
+  "title": "CTO",
+  "company": "Globex",
+  "phone": "+16502530000",
+  "address": "10 Loop, Springfield CA",
+  "primary_email": "jordan@globex.com",
+  "emails": ["jordan@globex.com", "jordan.vale@globex.com"],
+  "num_emails": 50,
+  "num_sent": 30,
+  "num_received": 20,
+  "first_interaction": "2023-01-01",
+  "last_interaction": "2025-03-15",
+  "source": "work.mbox | takeout.mbox"
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `type` | string | Annotation you fill in: one of `customer`, `competitor`, `investor`, `reporter`, `partner`, `vendor`, `other`. Blank on import. |
+| `friend` | string | Annotation flag (e.g. `Y`); set from a vCard `friend` category, otherwise blank. |
+| `last_name` | string | Surname, derived from the display name. |
+| `first_name` | string | Given name, derived from the display name. |
+| `title` | string | Annotation you fill in (job title); set from a vCard `TITLE`, otherwise blank. |
+| `company` | string | Derived from the email domain; blank for free providers (gmail/yahoo/outlook/...). |
+| `phone` | string | Extracted from the email signature (or a vCard `TEL`), normalized to `+E.164`; blank if none found. |
+| `address` | string | Annotation you fill in; set from a vCard `ADR`/`LABEL`, otherwise blank. |
+| `primary_email` | string | The most-used address; the record's key. |
+| `emails` | string[] | All known addresses for the person, primary first. |
+| `num_emails` | integer | Total messages exchanged (`num_sent` + `num_received`). |
+| `num_sent` | integer | Messages you sent to this contact. |
+| `num_received` | integer | Messages received from this contact. |
+| `first_interaction` | string\|null | Earliest interaction date (`YYYY-MM-DD`), or `null` if unknown. |
+| `last_interaction` | string\|null | Latest interaction date (`YYYY-MM-DD`), or `null` if unknown. |
+| `source` | string | Origin file(s) the record came from, joined by ` \| `. |
+
+The four annotation columns (`type`, `friend`, `title`, `address`) are left
+blank on a mailbox import for you to fill in by hand; they are preserved across
+re-imports and merges (see [Merge vs overwrite](#merge-vs-overwrite)). The same
+fields are the columns of the CSV export, and map to the corresponding vCard
+properties on export.
+
 ## Examples
 
 Build the contacts DB from a Gmail Takeout mbox:
