@@ -4,6 +4,7 @@
 Single CLI with one function per operation, dispatched as a subcommand:
   mc import  -i MBOX|PST -o OUT [...]           build/merge the contacts DB
   mc list    -i CONTACTS [filters...]           list matching addresses
+  mc dedup   -i CONTACTS -o OUT                 merge same-name contacts
 
 Import accepts a Gmail Takeout .mbox or an Outlook .pst (chosen by extension).
 The database is JSON (the native format); pass -o something.csv to export CSV.
@@ -207,9 +208,14 @@ class Rec:
 
 
 # ---- CSV output / additive merge -------------------------------------------
-CSV_FIELDS = ["vip", "last_name", "first_name", "company", "phone",
-              "primary_email", "emails", "num_emails", "num_sent",
-              "num_received", "first_interaction", "last_interaction", "source"]
+# Legal values for the manual `type` column (blank = unset).
+TYPE_VALUES = ["customer", "competitor", "investor", "reporter", "partner",
+               "vendor", "other"]
+
+CSV_FIELDS = ["type", "friend", "last_name", "first_name", "title", "company",
+              "phone", "address", "primary_email", "emails", "num_emails",
+              "num_sent", "num_received", "first_interaction",
+              "last_interaction", "source"]
 
 # Source values may contain spaces (mbox filenames), so they are joined with
 # this separator rather than a space (which the emails column uses).
@@ -226,11 +232,14 @@ def _to_int(v):
 def person_to_row(p, source):
     """Convert an in-memory person dict to a CSV row dict, tagged with source."""
     return {
-        "vip": "",
+        "type": "",
+        "friend": "",
         "last_name": p["last_name"],
         "first_name": p["first_name"],
+        "title": "",
         "company": p["company"],
         "phone": p.get("phone", ""),
+        "address": "",
         "primary_email": p["primary_email"],
         "emails": list(p["emails"]),
         "num_emails": p["num_emails"],
@@ -251,11 +260,14 @@ def _normalize_row(d):
     if not isinstance(emails, list):
         emails = (emails or "").split()
     return {
-        "vip": str(d.get("vip") or "").strip(),
+        "type": str(d.get("type") or "").strip(),
+        "friend": str(d.get("friend") or "").strip(),
         "last_name": str(d.get("last_name") or "").strip(),
         "first_name": str(d.get("first_name") or "").strip(),
+        "title": str(d.get("title") or "").strip(),
         "company": str(d.get("company") or "").strip(),
         "phone": str(d.get("phone") or "").strip(),
+        "address": str(d.get("address") or "").strip(),
         "primary_email": str(d.get("primary_email") or "").strip(),
         "emails": list(emails),
         "num_emails": _to_int(d.get("num_emails")),
@@ -309,11 +321,11 @@ def _union_sources(a, b):
 
 
 def merge_row(existing, new):
-    """Merge `new` into `existing`. Hand-edited text fields (vip, name, company)
+    """Merge `new` into `existing`. Hand-edited text fields (type, name, company)
     are preserved; counts are overwritten with the latest import; emails and
     sources union; the date range widens."""
-    existing["vip"] = existing["vip"] or new["vip"]
-    for f in ("last_name", "first_name", "company", "phone"):
+    for f in ("type", "friend", "last_name", "first_name", "title", "company",
+              "phone", "address"):
         existing[f] = existing[f] or new[f]
     for e in new["emails"]:
         if e not in existing["emails"]:
@@ -343,11 +355,12 @@ def write_csv_rows(path, rows):
         w.writerow(CSV_FIELDS)
         for r in rows:
             w.writerow([
-                r["vip"], r["last_name"], r["first_name"], r["company"],
-                r.get("phone", ""), r["primary_email"], " ".join(r["emails"]),
-                r["num_emails"], r["num_sent"], r["num_received"],
-                r["first_interaction"] or "", r["last_interaction"] or "",
-                r.get("source", ""),
+                r.get("type", ""), r.get("friend", ""), r["last_name"],
+                r["first_name"], r.get("title", ""), r["company"],
+                r.get("phone", ""), r.get("address", ""), r["primary_email"],
+                " ".join(r["emails"]), r["num_emails"], r["num_sent"],
+                r["num_received"], r["first_interaction"] or "",
+                r["last_interaction"] or "", r.get("source", ""),
             ])
     _write_atomic(path, _w)
 
@@ -385,7 +398,7 @@ def _domain(addr):
 def build_criteria(args):
     """Turn parsed list args into a flat dict of active predicates."""
     return {
-        "vip": args.vip,
+        "type": _csv_set(args.type),
         "company": _csv_set(args.company),
         "first_name": _csv_set(args.first_name),
         "last_name": _csv_set(args.last_name),
@@ -405,12 +418,8 @@ def build_criteria(args):
 
 def matches(contact, crit):
     """Return True if a contact satisfies every active criterion (AND)."""
-    # VIP flag: only contacts with a non-empty vip column.
-    if crit["vip"] and not str(contact.get("vip", "")).strip():
-        return False
-
     # Text set-membership (case-insensitive exact).
-    for field in ("company", "first_name", "last_name"):
+    for field in ("type", "company", "first_name", "last_name"):
         allowed = crit[field]
         if allowed is not None and str(contact.get(field, "")).lower() not in allowed:
             return False
@@ -860,6 +869,100 @@ def dump_llm(src, out_path):
     return n
 
 
+# ---- dedup ------------------------------------------------------------------
+def _join_distinct(values, sep=SOURCE_SEP):
+    """Join distinct non-empty values (each may itself already be sep-joined)."""
+    out = []
+    for v in values:
+        for piece in (v or "").split(sep):
+            piece = piece.strip()
+            if piece and piece not in out:
+                out.append(piece)
+    return sep.join(out)
+
+
+def _merge_group(rows):
+    """Merge a list of same-name contact rows into one (counts sum; emails and
+    sources union; dates widen; type/company/phone keep all distinct values;
+    name casing and primary email come from the highest-volume row)."""
+    winner = max(rows, key=lambda r: r["num_emails"])
+    emails = []
+    for r in rows:
+        for e in r["emails"]:
+            if e not in emails:
+                emails.append(e)
+    source = ""
+    first = last = None
+    for r in rows:
+        source = _union_sources(source, r.get("source", ""))
+        first = _merge_date(first, r.get("first_interaction"), newest=False)
+        last = _merge_date(last, r.get("last_interaction"), newest=True)
+    return {
+        "type": _join_distinct(r["type"] for r in rows),
+        "friend": _join_distinct(r["friend"] for r in rows),
+        "last_name": winner["last_name"],
+        "first_name": winner["first_name"],
+        "title": _join_distinct(r["title"] for r in rows),
+        "company": _join_distinct(r["company"] for r in rows),
+        "phone": _join_distinct(r["phone"] for r in rows),
+        "address": _join_distinct(r["address"] for r in rows),
+        "primary_email": winner["primary_email"],
+        "emails": emails,
+        "num_emails": sum(r["num_emails"] for r in rows),
+        "num_sent": sum(r["num_sent"] for r in rows),
+        "num_received": sum(r["num_received"] for r in rows),
+        "first_interaction": first,
+        "last_interaction": last,
+        "source": source,
+    }
+
+
+def dedup_contacts(rows):
+    """Merge rows sharing a case-insensitive (first, last) name into one.
+
+    Rows missing a first or last name cannot be keyed and pass through untouched.
+    Output is sorted the same way as the importer.
+    """
+    groups = {}
+    order = []
+    passthrough = []
+    for r in rows:
+        first = r["first_name"].strip().lower()
+        last = r["last_name"].strip().lower()
+        if not first or not last:
+            passthrough.append(r)
+            continue
+        key = (first, last)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(r)
+    merged = []
+    for key in order:
+        grp = groups[key]
+        merged.append(grp[0] if len(grp) == 1 else _merge_group(grp))
+    merged.extend(passthrough)
+    merged.sort(key=lambda r: (
+        r["company"] == "",
+        r["company"].lower(),
+        -r["num_emails"],
+        r["last_name"].lower(),
+        r["first_name"].lower(),
+    ))
+    return merged
+
+
+def _resolve_db_out(arg):
+    """Resolve a contacts-DB output path: a directory -> contacts.json inside it;
+    a bare name without a .json/.csv suffix -> .json appended."""
+    out = os.path.abspath(arg)
+    if os.path.isdir(out) or arg.endswith(os.sep):
+        return os.path.join(out, "contacts.json")
+    if os.path.splitext(out)[1].lower() not in (".json", ".csv"):
+        out += ".json"
+    return out
+
+
 # ---- commands ---------------------------------------------------------------
 def cmd_import(args):
     """Import a Gmail mbox or Outlook PST (args.input) into the contacts DB."""
@@ -994,19 +1097,13 @@ def cmd_import(args):
 
     # -o may be a directory (writes contacts.json) or a file path. The format
     # follows the extension: a .csv path exports CSV, otherwise JSON (native).
-    out = os.path.abspath(args.out)
-    if os.path.isdir(out) or args.out.endswith(os.sep):
-        cpath = os.path.join(out, "contacts.json")
-    else:
-        cpath = out
-        if os.path.splitext(cpath)[1].lower() not in (".json", ".csv"):
-            cpath += ".json"
+    cpath = _resolve_db_out(args.out)
     outdir = os.path.dirname(cpath)
     if outdir:
         os.makedirs(outdir, exist_ok=True)
 
     # Merge into any existing file: counts are overwritten with this import,
-    # emails union and the date range widens, and hand-edited fields (e.g. vip)
+    # emails union and the date range widens, and hand-edited fields (e.g. type)
     # are preserved. Contacts present only in the old file are kept untouched.
     # With -f/--force, ignore the existing file and overwrite it.
     merged = {} if args.force else read_existing_rows(cpath)
@@ -1041,6 +1138,11 @@ def cmd_import(args):
 
 def cmd_list(args):
     """List matching addresses from a contacts file (JSON or CSV, args.input)."""
+    if args.type:
+        bad = [t for t in (_csv_set(args.type) or set()) if t not in TYPE_VALUES]
+        if bad:
+            sys.exit("error: invalid --type value(s) %s; legal values: %s"
+                     % (", ".join(sorted(bad)), ", ".join(TYPE_VALUES)))
     contacts = load_rows(args.input)
     crit = build_criteria(args)
     selected = [c for c in contacts if matches(c, crit)]
@@ -1056,6 +1158,22 @@ def cmd_list(args):
     sys.stderr.write(
         f"Matched {len(selected):,}/{len(contacts):,} contacts, "
         f"{len(addrs):,} addresses.\n")
+
+
+def cmd_dedup(args):
+    """Merge contacts sharing a first+last name (args.input -> args.output)."""
+    rows = load_rows(args.input)
+    if not rows:
+        sys.exit("error: no contacts found in %s" % args.input)
+    merged = dedup_contacts(rows)
+    out_path = _resolve_db_out(args.output)
+    outdir = os.path.dirname(out_path)
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
+    write_rows(out_path, merged)
+    sys.stderr.write(
+        f"Deduped {len(rows):,} rows -> {len(merged):,} contacts "
+        f"({len(rows) - len(merged):,} merged away) -> {out_path}\n")
 
 
 def parse_args(argv=None):
@@ -1093,8 +1211,9 @@ def parse_args(argv=None):
                     help="write the address line to a file (default: stdout)")
     ex.add_argument("--all-emails", action="store_true",
                     help="emit every address per contact (default: primary only)")
-    ex.add_argument("--vip", action="store_true",
-                    help="only contacts flagged VIP (non-empty vip column)")
+    ex.add_argument("--type", dest="type",
+                    help="match contact type against any of LIST (%s)"
+                         % "/".join(TYPE_VALUES))
     ex.add_argument("--company", help="match company against any of LIST")
     ex.add_argument("--first-name", dest="first_name",
                     help="match first name against any of LIST")
@@ -1117,6 +1236,16 @@ def parse_args(argv=None):
     ex.add_argument("--first-before", dest="first_before", metavar="YYYY-MM-DD",
                     help="first_interaction on or before this date")
     ex.set_defaults(func=cmd_list)
+
+    # mc dedup -i CONTACTS -o OUT
+    dd = sub.add_parser(
+        "dedup", help="merge contacts that share a first+last name")
+    dd.add_argument("-i", "--input", dest="input", required=True,
+                    help="path to the contacts JSON or CSV to deduplicate")
+    dd.add_argument("-o", "--output", dest="output", required=True,
+                    help="output path (.json/.csv, or a directory); may equal "
+                         "-i to rewrite in place")
+    dd.set_defaults(func=cmd_dedup)
 
     return p.parse_args(argv)
 

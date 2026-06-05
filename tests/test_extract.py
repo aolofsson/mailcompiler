@@ -14,7 +14,7 @@ CONTACTS = [
      "emails": ["jordan@globex.com", "jordan.vale@globex.com"],
      "num_emails": 50, "num_sent": 30, "num_received": 20,
      "first_interaction": "2023-01-01", "last_interaction": "2025-03-15"},
-    {"first_name": "Anna", "last_name": "Lee", "company": "Initech", "vip": "Y",
+    {"first_name": "Anna", "last_name": "Lee", "company": "Initech", "type": "customer",
      "primary_email": "anna.lee@initech.com", "emails": ["anna.lee@initech.com"],
      "num_emails": 12, "num_sent": 6, "num_received": 6,
      "first_interaction": "2024-02-10", "last_interaction": "2026-01-09"},
@@ -52,19 +52,20 @@ class TestTextFilters:
         assert run(email_domain="northwind.com") == ["Dana"]
 
 
-class TestVipFilter:
-    def test_vip_only(self):
-        c = build_criteria(parse_args(["list", "-i", "x.csv", "--vip"]))
+class TestTypeFilter:
+    def test_type_match(self):
+        c = build_criteria(parse_args(["list", "-i", "x.csv",
+                                       "--type", "customer"]))
         assert [x["first_name"] for x in CONTACTS if matches(x, c)] == ["Anna"]
 
-    def test_no_vip_flag_matches_all(self):
+    def test_no_type_flag_matches_all(self):
         c = build_criteria(parse_args(["list", "-i", "x.csv"]))
         assert len([x for x in CONTACTS if matches(x, c)]) == len(CONTACTS)
 
-    def test_vip_combines_with_other_filters(self):
+    def test_type_combines_with_other_filters(self):
         c = build_criteria(parse_args(
-            ["list", "-i", "x.csv", "--vip", "--company", "Globex"]))
-        # Anna is VIP but not Globex; Jordan is Globex but not VIP -> none.
+            ["list", "-i", "x.csv", "--type", "customer", "--company", "Globex"]))
+        # Anna is customer but not Globex; nobody is both -> none.
         assert [x["first_name"] for x in CONTACTS if matches(x, c)] == []
 
 

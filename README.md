@@ -1,4 +1,4 @@
-# mailcompiler
+# MailCompiler
 
 Build and query a personal contacts database from a Gmail Takeout mailbox.
 `mc import` turns an `.mbox` into a `contacts.json` database; `mc list` queries
@@ -14,12 +14,14 @@ pip install -e ".[dev]"          # provides the `mc` command
 `mc` has one subcommand per operation, all with a uniform `-i/--input`:
 
 ```
-mc import  -i MBOX -o OUT [...]               build/merge the contacts DB
+mc import  -i MBOX|PST -o OUT [...]           build/merge the contacts DB
 mc list    -i CONTACTS [filters...]           list matching addresses
+mc dedup   -i CONTACTS -o OUT                 merge same-name contacts
 ```
 
-The database is JSON (the native format). Pass `-o something.csv` to export
-CSV instead.
+Import reads a Gmail Takeout `.mbox` or an Outlook `.pst` (chosen by extension).
+The database is JSON (the native format); pass `-o something.csv` to export CSV
+instead. `mc import --llm` instead writes a per-email JSONL corpus for LLMs.
 
 Without installing, run it as a module: `python -m mailcompiler.mailcompiler <command> ...`.
 
@@ -94,12 +96,17 @@ If the output file already exists, the importer **merges** into it (in whichever
 format the output path uses). For an existing contact, the counts (`num_emails`,
 `num_sent`, `num_received`) are overwritten with the latest import, the email
 list is unioned, and the interaction date range widens; hand-edited fields
-(notably the `vip` field, plus name/company) are preserved. Contacts present only
-in the old file are left untouched. This lets you re-run as a mailbox grows, or
-accumulate multiple mailboxes, without losing manual annotations.
+(the blank annotation columns `type`/`friend`/`title`/`address`, plus
+name/company) are preserved. Contacts present only in the old file are left
+untouched. This lets you re-run as a mailbox grows, or accumulate multiple
+mailboxes, without losing manual annotations.
+
+Imported rows include blank columns for you to fill in by hand: `type` (one of
+`customer`, `competitor`, `investor`, `reporter`, `partner`, `vendor`, `other`),
+`friend`, `title`, and `address`.
 
 Use `-f` / `--force` to ignore the existing file and write a fresh one instead
-(this discards any manual edits such as `vip`).
+(this discards any manual edits such as `type`).
 
 ### Dump for an LLM
 
@@ -129,8 +136,8 @@ Note: `--company` matches the derived company *name* (e.g. `Globex`), while
 `--email-domain` matches the address domain (e.g. `globex.com`).
 
 ```bash
-# Only contacts you have flagged VIP (non-empty vip column):
-mc list -i data/contacts.json --vip
+# Customers and investors (the `type` column you filled in):
+mc list -i data/contacts.json --type customer,investor
 
 # Everyone at Intel or AMD with at least 5 emails, active since 2024:
 mc list -i data/contacts.json \
@@ -145,6 +152,33 @@ mc list -i data/contacts.json \
   --company globex --all-emails -o segment.txt
 ```
 
-See `mc list -h` for the full set of filters (`--vip`, `--first-name`,
-`--last-name`, `--min/max-emails`, `--min/max-sent`, `--min/max-received`,
-`--first-after/before`, `--last-after/before`).
+`--type` accepts only the legal values (`customer`, `competitor`, `investor`,
+`reporter`, `partner`, `vendor`, `other`). See `mc list -h` for the full set of
+filters (`--type`, `--first-name`, `--last-name`, `--min/max-emails`,
+`--min/max-sent`, `--min/max-received`, `--first-after/before`,
+`--last-after/before`).
+
+## Deduplicating contacts
+
+`mc dedup` merges rows that share the same first **and** last name
+(case-insensitive), which can accumulate from multiple imports or manual edits.
+
+```bash
+mc dedup -i data/contacts.json -o data/contacts.json   # in place
+mc dedup -i data/contacts.json -o deduped.csv           # or to a new file
+```
+
+When duplicates are merged:
+
+- counts (`num_emails`/`num_sent`/`num_received`) are **summed**, `emails` and
+  `source` are **unioned**, and the interaction date range **widens**;
+- conflicting annotation fields (`type`, `friend`, `title`, `company`, `phone`,
+  `address`) are **kept all** (distinct values joined with ` | `), so no manual
+  edit is lost;
+- the `primary_email` and name casing come from the highest-volume duplicate.
+
+Rows missing a first or last name are left untouched. `-o` may equal `-i` to
+rewrite in place, and the output format follows the `-o` extension (JSON/CSV).
+Because matching is by name only, two different people with the same name will
+be merged -- the joined `company` and multiple `emails` make such cases easy to
+spot for manual review.

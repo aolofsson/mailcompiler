@@ -11,6 +11,7 @@ from mailcompiler.mailcompiler import (
     Rec, _ingest_message, _pst_message_fields, _MAPI_SENDER_SMTP,
     _signature_text, _extract_phones,
     _format_addrs, _is_noreply, dump_llm,
+    _join_distinct, _merge_group, dedup_contacts,
 )
 
 
@@ -97,9 +98,10 @@ class TestIsBlacklisted:
 class TestMergeRow:
     def _existing(self):
         return {
-            "vip": "Y", "last_name": "Lee", "first_name": "Anna",
-            "company": "Initech", "phone": "+16502530000",
-            "primary_email": "anna@initech.com",
+            "type": "customer", "friend": "Y", "last_name": "Lee",
+            "first_name": "Anna",
+            "title": "VP", "company": "Initech", "phone": "+16502530000",
+            "address": "1 Main St", "primary_email": "anna@initech.com",
             "emails": ["anna@initech.com"], "num_emails": 10, "num_sent": 4,
             "num_received": 6, "first_interaction": "2023-01-01",
             "last_interaction": "2024-01-01", "source": "alpha.mbox",
@@ -107,9 +109,9 @@ class TestMergeRow:
 
     def _new(self):
         return {
-            "vip": "", "last_name": "Lee", "first_name": "Anna",
-            "company": "Initech", "phone": "+14155552671",
-            "primary_email": "anna@initech.com",
+            "type": "", "friend": "", "last_name": "Lee", "first_name": "Anna",
+            "title": "Director", "company": "Initech", "phone": "+14155552671",
+            "address": "", "primary_email": "anna@initech.com",
             "emails": ["anna@initech.com", "anna.lee@initech.com"],
             "num_emails": 5, "num_sent": 2, "num_received": 3,
             "first_interaction": "2022-06-01", "last_interaction": "2025-03-15",
@@ -123,11 +125,11 @@ class TestMergeRow:
         assert e["num_sent"] == 2
         assert e["num_received"] == 3
 
-    def test_vip_and_text_preserved(self):
+    def test_type_and_text_preserved(self):
         e = self._existing()
-        e["vip"] = "Y"
         merge_row(e, self._new())
-        assert e["vip"] == "Y"  # hand-edited field not clobbered
+        assert e["type"] == "customer"   # hand-edited field not clobbered
+        assert e["title"] == "VP"        # existing title kept over the new one
 
     def test_emails_union_and_dates_widen(self):
         e = self._existing()
@@ -170,14 +172,15 @@ class TestPersonToRow:
              "first_interaction": "2024-01-01", "last_interaction": "2024-01-01"}
         row = person_to_row(p, "All mail.mbox")
         assert row["source"] == "All mail.mbox"
-        assert row["vip"] == ""
+        assert row["type"] == ""
 
 
 class TestRoundTrip:
     ROWS = [{
-        "vip": "Y", "last_name": "Vale", "first_name": "Jordan",
-        "company": "Globex", "phone": "+16502530000",
-        "primary_email": "jordan@globex.com",
+        "type": "customer", "friend": "Y", "last_name": "Vale",
+        "first_name": "Jordan",
+        "title": "CTO", "company": "Globex", "phone": "+16502530000",
+        "address": "10 Loop, CA", "primary_email": "jordan@globex.com",
         "emails": ["jordan@globex.com", "jordan.vale@globex.com"],
         "num_emails": 3, "num_sent": 2, "num_received": 1,
         "first_interaction": "2023-01-01", "last_interaction": "2024-05-05",
@@ -206,7 +209,7 @@ class TestRoundTrip:
         # CSV preserves the same values (emails re-split, ints re-parsed)
         assert r["emails"] == ["jordan@globex.com", "jordan.vale@globex.com"]
         assert r["num_sent"] == 2 and r["num_received"] == 1
-        assert r["vip"] == "Y" and r["source"] == "a.mbox | b.mbox"
+        assert r["type"] == "customer" and r["source"] == "a.mbox | b.mbox"
         assert r["last_interaction"] == "2024-05-05"
 
 
@@ -400,3 +403,82 @@ class TestPstMessageFields:
                     record_sets=[_RS([_Entry(_MAPI_SENDER_SMTP, "/O=EX/CN=carol")])])
         f = _pst_message_fields(m, "Inbox")
         assert f["from"] == [("Carol", "")]   # non-SMTP -> blanked, later skipped
+
+
+def _row(first="", last="", company="", phone="", ctype="", primary="",
+         emails=None, n_emails=0, n_sent=0, n_recv=0, first_i=None, last_i=None,
+         source="", title="", address="", friend=""):
+    return {"type": ctype, "friend": friend, "last_name": last,
+            "first_name": first, "title": title, "company": company,
+            "phone": phone, "address": address, "primary_email": primary,
+            "emails": emails if emails is not None else ([primary] if primary else []),
+            "num_emails": n_emails, "num_sent": n_sent, "num_received": n_recv,
+            "first_interaction": first_i, "last_interaction": last_i,
+            "source": source}
+
+
+class TestJoinDistinct:
+    def test_dedupes_and_drops_blanks(self):
+        assert _join_distinct(["Acme", "", "Acme", "Globex"]) == "Acme | Globex"
+
+    def test_splits_prejoined(self):
+        assert _join_distinct(["A | B", "B | C"]) == "A | B | C"
+
+
+class TestMergeGroup:
+    def _pair(self):
+        r1 = _row("Jane", "Roe", "Acme", "+16175550000", "customer",
+                  "jane@acme.com", ["jane@acme.com"], 40, 30, 10,
+                  "2022-01-01", "2024-01-01", "a.mbox", title="VP",
+                  address="1 Main", friend="Y")
+        r2 = _row("Jane", "Roe", "Acme2", "+14155550000", "competitor",
+                  "jane@gmail.com", ["jane@gmail.com"], 3, 2, 1,
+                  "2021-06-01", "2025-05-05", "b.mbox", title="Director",
+                  address="2 Oak", friend="")
+        return r1, r2
+
+    def test_counts_summed(self):
+        m = _merge_group(list(self._pair()))
+        assert (m["num_emails"], m["num_sent"], m["num_received"]) == (43, 32, 11)
+
+    def test_emails_union_and_winner_fields(self):
+        m = _merge_group(list(self._pair()))
+        assert m["emails"] == ["jane@acme.com", "jane@gmail.com"]
+        assert m["primary_email"] == "jane@acme.com"   # higher-volume record
+
+    def test_conflicts_joined_and_flags_kept(self):
+        m = _merge_group(list(self._pair()))
+        assert m["company"] == "Acme | Acme2"
+        assert m["phone"] == "+16175550000 | +14155550000"
+        assert m["type"] == "customer | competitor"
+        assert m["friend"] == "Y"
+        assert m["title"] == "VP | Director"
+        assert m["address"] == "1 Main | 2 Oak"
+        assert m["source"] == "a.mbox | b.mbox"
+
+    def test_dates_widen(self):
+        m = _merge_group(list(self._pair()))
+        assert m["first_interaction"] == "2021-06-01"
+        assert m["last_interaction"] == "2025-05-05"
+
+
+class TestDedupContacts:
+    def test_merges_case_insensitive_and_keeps_others(self):
+        rows = [
+            _row("Jane", "Roe", "Acme", primary="jane@acme.com", n_emails=40),
+            _row("jane", "roe", "Acme2", primary="jane@gmail.com", n_emails=3),
+            _row("Bob", "Smith", "Globex", primary="bob@globex.com", n_emails=5),
+            _row("Support", "", "Acme", primary="support@acme.com", n_emails=9),
+        ]
+        out = dedup_contacts(rows)
+        assert len(out) == 3                       # Jane*2 merged; Bob; Support
+        janes = [r for r in out if r["last_name"].lower() == "roe"]
+        assert len(janes) == 1 and janes[0]["num_emails"] == 43
+        assert janes[0]["first_name"] == "Jane"    # casing from higher-volume row
+        # blank-last-name row passes through untouched
+        assert any(r["first_name"] == "Support" and r["last_name"] == ""
+                   for r in out)
+
+    def test_idempotent(self):
+        rows = [_row("Bob", "Smith", primary="bob@x.com", n_emails=5)]
+        assert len(dedup_contacts(dedup_contacts(rows))) == 1
