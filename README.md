@@ -1,13 +1,13 @@
 ![MailCompiler](docs/postverket.svg)
 
 MailCompiler is a utility for reclaiming control over emails and contacts via
-automatic imports from .mbox and .pst exports into a human readableJ JSON
+automatic imports from .mbox and .pst exports into a human readable JSON
 database.
 
 ## Motivation
-- You need to own your our data!!
-- Scraping your own inbox to put together outreach lists is a waste of life
-- CRMs are awful
+- You need to own your data!
+- Manually scraping inboxes to put together outreach lists is a waste of life
+- CRMs are over engineered for startups
 - Email client import/output is barely functional
 - Email client search functions are completely broken
 
@@ -17,7 +17,7 @@ database.
 - Automatic extraction of email conversations into contacts
 - Automatic extraction of phone numbers from email signatures
 - Import/export support for VCARD (3.0) and CSV (Outlook) contact lists
-- Streaming .mbox into LLM frindly JSONL corpus
+- Streaming .mbox into LLM friendly JSON corpus
 - Incremental non-destructive merging of multiple JSON databases
 - Deduplication of records
 - Black list email list support
