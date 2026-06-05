@@ -12,6 +12,8 @@ from mailcompiler.mailcompiler import (
     _signature_text, _extract_phones,
     _format_addrs, _is_noreply, dump_llm,
     _join_distinct, _merge_group, dedup_contacts,
+    _vcard_escape, _vcard_fold, _contact_vcard, write_vcards,
+    _vcard_unescape, parse_vcards,
 )
 
 
@@ -482,3 +484,117 @@ class TestDedupContacts:
     def test_idempotent(self):
         rows = [_row("Bob", "Smith", primary="bob@x.com", n_emails=5)]
         assert len(dedup_contacts(dedup_contacts(rows))) == 1
+
+
+class TestVcard:
+    def test_escape(self):
+        assert _vcard_escape("a,b;c\\d\ne") == "a\\,b\\;c\\\\d\\ne"
+
+    def test_fold_ascii(self):
+        folded = _vcard_fold("NOTE:" + "x" * 200)
+        physical = folded.split("\r\n")
+        assert len(physical) > 1
+        assert all(len(p.encode("utf-8")) <= 75 for p in physical)
+        assert all(p.startswith(" ") for p in physical[1:])  # continuations
+        assert folded.replace("\r\n ", "") == "NOTE:" + "x" * 200
+
+    def test_fold_multibyte_safe(self):
+        line = "NOTE:" + "é" * 100        # 2-byte chars
+        folded = _vcard_fold(line)
+        assert all(len(p.encode("utf-8")) <= 75 for p in folded.split("\r\n"))
+        assert folded.replace("\r\n ", "") == line   # no char was split
+
+    def test_contact_vcard_fields(self):
+        row = _row("Jane", "Roe", "Acme", "+16175550000", "customer",
+                   "jane@acme.com", ["jane@acme.com", "jane@gmail.com"],
+                   40, 30, 10, "2022-01-01", "2024-01-01", "a.mbox",
+                   title="VP", address="1 Main St", friend="Y")
+        lines = _contact_vcard(row)
+        assert lines[0] == "BEGIN:VCARD" and lines[-1] == "END:VCARD"
+        assert "VERSION:3.0" in lines
+        assert "FN:Jane Roe" in lines
+        assert "N:Roe;Jane;;;" in lines
+        assert "ORG:Acme" in lines and "TITLE:VP" in lines
+        assert "EMAIL;TYPE=INTERNET,PREF:jane@acme.com" in lines
+        assert "EMAIL;TYPE=INTERNET:jane@gmail.com" in lines
+        assert "TEL;TYPE=VOICE:+16175550000" in lines
+        assert "CATEGORIES:customer,friend" in lines
+        assert any(ln.startswith("NOTE:") for ln in lines)
+
+    def test_write_vcards_file(self):
+        rows = [_row("Jane", "Roe", primary="jane@acme.com", n_emails=1),
+                _row("Bob", "Smith", primary="bob@x.com", n_emails=1)]
+        fd, path = tempfile.mkstemp(suffix=".vcf")
+        os.close(fd)
+        try:
+            write_vcards(path, rows)
+            data = open(path, "rb").read()
+        finally:
+            os.remove(path)
+        assert data.count(b"BEGIN:VCARD") == 2
+        assert b"\r\n" in data
+        assert all(len(p) <= 75 for p in data.split(b"\r\n"))
+
+
+GMAIL_VCF = """BEGIN:VCARD
+VERSION:3.0
+FN:Alex Smith
+N:Smith;Alex;;;
+ORG:Acme Corp;Sales
+TITLE:Account Executive
+EMAIL;TYPE=INTERNET,WORK,PREF:alex.smith@acme.example.com
+EMAIL;TYPE=INTERNET,HOME:alex.personal@example.com
+TEL;TYPE=CELL,VOICE,PREF:+1-555-0199
+ADR;TYPE=WORK,PREF:;;123 Business Rd;Boston;MA;02110;USA
+NOTE:Met at the 2026 tech conference.
+CATEGORIES:customer,friend
+END:VCARD
+"""
+
+
+def _write_tmp(text, suffix):
+    fd, path = tempfile.mkstemp(suffix=suffix)
+    with os.fdopen(fd, "w", newline="") as fh:
+        fh.write(text)
+    return path
+
+
+class TestVcardImport:
+    def test_unescape(self):
+        assert _vcard_unescape("a\\,b\\;c\\nd\\\\e") == "a,b;c\nd\\e"
+
+    def test_parse_gmail_reference(self):
+        path = _write_tmp(GMAIL_VCF, ".vcf")
+        try:
+            rows = parse_vcards(path)
+        finally:
+            os.remove(path)
+        assert len(rows) == 1
+        r = rows[0]
+        assert (r["first_name"], r["last_name"]) == ("Alex", "Smith")
+        assert r["company"] == "Acme Corp"          # first ORG component
+        assert r["title"] == "Account Executive"
+        assert r["primary_email"] == "alex.smith@acme.example.com"   # PREF
+        assert "alex.personal@example.com" in r["emails"]
+        assert r["phone"] == "+1-555-0199"
+        assert "Boston" in r["address"]
+        assert r["type"] == "customer" and r["friend"] == "Y"
+
+    def test_roundtrip_write_then_parse(self):
+        rows = [_row("Jane", "Roe", "Acme", "+16175550000", "customer",
+                     "jane@acme.com", ["jane@acme.com", "jane@gmail.com"],
+                     title="VP", address="1 Main St", friend="Y")]
+        path = _write_tmp("", ".vcf")
+        try:
+            write_vcards(path, rows)
+            back = parse_vcards(path)
+        finally:
+            os.remove(path)
+        assert len(back) == 1
+        b = back[0]
+        assert (b["first_name"], b["last_name"]) == ("Jane", "Roe")
+        assert b["primary_email"] == "jane@acme.com"
+        assert b["emails"] == ["jane@acme.com", "jane@gmail.com"]
+        assert b["company"] == "Acme" and b["title"] == "VP"
+        assert b["phone"] == "+16175550000"
+        assert b["type"] == "customer" and b["friend"] == "Y"

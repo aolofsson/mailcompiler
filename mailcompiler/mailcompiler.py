@@ -2,11 +2,12 @@
 """mailcompiler (mc): build and query a contacts database.
 
 Single CLI with one function per operation, dispatched as a subcommand:
-  mc import  -i MBOX|PST -o OUT [...]           build/merge the contacts DB
-  mc list    -i CONTACTS [filters...]           list matching addresses
+  mc import  -i MBOX|PST|VCF -o OUT [...]       build/merge the contacts DB
+  mc export  -i CONTACTS -o OUT.{csv,vcf}       export matching records
   mc dedup   -i CONTACTS -o OUT                 merge same-name contacts
 
-Import accepts a Gmail Takeout .mbox or an Outlook .pst (chosen by extension).
+Import accepts a Gmail Takeout .mbox, an Outlook .pst, or a vCard .vcf/.vcd
+(chosen by extension).
 The database is JSON (the native format); pass -o something.csv to export CSV.
 
 mbox import streams the file (only header blocks are parsed, bodies skipped),
@@ -455,20 +456,6 @@ def matches(contact, crit):
             return False
 
     return True
-
-
-def select_addresses(contacts, all_emails):
-    """Collect primary (or all) addresses, de-duplicated in first-seen order."""
-    seen = set()
-    out = []
-    for c in contacts:
-        addrs = c.get("emails", []) if all_emails else [c.get("primary_email", "")]
-        for a in addrs:
-            a = (a or "").strip()
-            if a and a.lower() not in seen:
-                seen.add(a.lower())
-                out.append(a)
-    return out
 
 
 # ---- body / phone extraction ------------------------------------------------
@@ -963,9 +950,260 @@ def _resolve_db_out(arg):
     return out
 
 
+# ---- vCard export -----------------------------------------------------------
+def _vcard_escape(value):
+    """Escape a value for a vCard 3.0 text field (RFC 2426)."""
+    return (str(value).replace("\\", "\\\\").replace("\n", "\\n")
+            .replace(",", "\\,").replace(";", "\\;"))
+
+
+def _vcard_fold(line):
+    """Fold a vCard line to <=75 octets, continuations led by a single space.
+
+    Splits on character boundaries (never inside a multi-byte UTF-8 char) and
+    joins physical lines with CRLF, as Google Contacts expects.
+    """
+    physical = []
+    cur, cur_bytes = "", 0
+    for ch in line:
+        b = len(ch.encode("utf-8"))
+        if cur_bytes + b > 75:
+            physical.append(cur)
+            cur, cur_bytes = " ", 1     # continuation leading space
+        cur += ch
+        cur_bytes += b
+    physical.append(cur)
+    return "\r\n".join(physical)
+
+
+def _contact_vcard(row):
+    """Return the folded vCard 3.0 lines for one contact row (Gmail style)."""
+    first = (row.get("first_name") or "").strip()
+    last = (row.get("last_name") or "").strip()
+    fn = (first + " " + last).strip() or (row.get("primary_email") or "")
+    props = [
+        "BEGIN:VCARD",
+        "VERSION:3.0",
+        "FN:" + _vcard_escape(fn),
+        "N:%s;%s;;;" % (_vcard_escape(last), _vcard_escape(first)),
+    ]
+    if row.get("company"):
+        props.append("ORG:" + _vcard_escape(row["company"]))
+    if row.get("title"):
+        props.append("TITLE:" + _vcard_escape(row["title"]))
+
+    primary = row.get("primary_email") or ""
+    ordered = ([primary] if primary else [])
+    ordered += [e for e in (row.get("emails") or []) if e and e != primary]
+    for i, email in enumerate(ordered):
+        typ = "INTERNET,PREF" if i == 0 else "INTERNET"
+        props.append("EMAIL;TYPE=%s:%s" % (typ, email))
+
+    if row.get("phone"):
+        props.append("TEL;TYPE=VOICE:" + row["phone"])
+    if row.get("address"):
+        addr = _vcard_escape(row["address"])
+        props.append("ADR;TYPE=WORK:;;%s;;;;" % addr)
+        props.append("LABEL;TYPE=WORK:" + addr)
+
+    note = "emails %s (sent %s, received %s)" % (
+        row.get("num_emails", 0), row.get("num_sent", 0),
+        row.get("num_received", 0))
+    if row.get("first_interaction") or row.get("last_interaction"):
+        note += "; %s..%s" % (row.get("first_interaction") or "?",
+                              row.get("last_interaction") or "?")
+    if row.get("source"):
+        note += "; source: " + row["source"]
+    props.append("NOTE:" + _vcard_escape(note))
+
+    cats = [c for c in (row.get("type") or "",
+                        "friend" if row.get("friend") else "") if c]
+    if cats:
+        props.append("CATEGORIES:" + ",".join(_vcard_escape(c) for c in cats))
+    props.append("END:VCARD")
+    return [_vcard_fold(p) for p in props]
+
+
+def _vcard_text(rows):
+    """Render one or more contact rows as CRLF-delimited, folded vCard 3.0."""
+    lines = []
+    for r in rows:
+        lines.extend(_contact_vcard(r))
+    return "\r\n".join(lines) + "\r\n"
+
+
+def write_vcards(path, rows):
+    """Write all contacts into a single multi-card vCard file (Gmail-style)."""
+    _write_atomic(path, lambda out: out.write(_vcard_text(rows)))
+
+
+def _vcard_unescape(value):
+    """Reverse vCard text escaping (\\\\ \\n \\, \\;)."""
+    out, i = [], 0
+    while i < len(value):
+        ch = value[i]
+        if ch == "\\" and i + 1 < len(value):
+            nxt = value[i + 1]
+            out.append("\n" if nxt in ("n", "N") else nxt)
+            i += 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def _vcard_split(value, sep):
+    """Split on unescaped `sep`; returns still-escaped pieces."""
+    parts, cur, i = [], [], 0
+    while i < len(value):
+        ch = value[i]
+        if ch == "\\" and i + 1 < len(value):
+            cur.append(value[i:i + 2])
+            i += 2
+        elif ch == sep:
+            parts.append("".join(cur))
+            cur = []
+            i += 1
+        else:
+            cur.append(ch)
+            i += 1
+    parts.append("".join(cur))
+    return parts
+
+
+def _unfold_vcard_lines(text):
+    """Unfold RFC 2426 continuation lines (leading space/tab)."""
+    lines = []
+    for ln in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if ln[:1] in (" ", "\t") and lines:
+            lines[-1] += ln[1:]
+        else:
+            lines.append(ln)
+    return lines
+
+
+def _vcard_to_row(card, source):
+    """Build a contact row dict from accumulated vCard properties."""
+    n = card["n"]
+    if n and len(n) >= 2 and (n[0].strip() or n[1].strip()):
+        last, first = n[0].strip(), n[1].strip()
+    else:
+        first, last = split_name(card["fn"], "")
+    primary = card["pref_email"] or (card["emails"][0] if card["emails"] else "")
+    emails = ([primary] if primary else [])
+    emails += [e for e in card["emails"] if e and e != primary and e not in emails]
+    ctype, friend = "", ""
+    for c in card["categories"]:
+        if c.lower() in TYPE_VALUES and not ctype:
+            ctype = c.lower()
+        if c.lower() == "friend":
+            friend = "Y"
+    if not (first or last or primary):
+        return None
+    return _normalize_row({
+        "type": ctype, "friend": friend, "first_name": first, "last_name": last,
+        "title": card["title"], "company": card["org"], "phone": card["tel"],
+        "address": card["label"] or card["adr"], "primary_email": primary,
+        "emails": emails, "source": source,
+    })
+
+
+def parse_vcards(path):
+    """Parse a vCard (.vcf) file into a list of contact row dicts."""
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        text = fh.read()
+    source = os.path.basename(path)
+    rows, card = [], None
+    for line in _unfold_vcard_lines(text):
+        s = line.strip()
+        if s.upper() == "BEGIN:VCARD":
+            card = {"emails": [], "pref_email": "", "tel": "", "n": None,
+                    "fn": "", "org": "", "title": "", "adr": "", "label": "",
+                    "categories": []}
+            continue
+        if s.upper() == "END:VCARD":
+            if card is not None:
+                row = _vcard_to_row(card, source)
+                if row:
+                    rows.append(row)
+            card = None
+            continue
+        if card is None or ":" not in line:
+            continue
+        left, _, value = line.partition(":")
+        bits = left.split(";")
+        name, params = bits[0].upper(), ";".join(bits[1:]).upper()
+        if name == "FN":
+            card["fn"] = _vcard_unescape(value)
+        elif name == "N":
+            card["n"] = [_vcard_unescape(c) for c in _vcard_split(value, ";")]
+        elif name == "ORG":
+            comps = _vcard_split(value, ";")
+            card["org"] = _vcard_unescape(comps[0]) if comps else ""
+        elif name == "TITLE":
+            card["title"] = _vcard_unescape(value)
+        elif name == "EMAIL":
+            addr = _vcard_unescape(value).strip()
+            if addr:
+                card["emails"].append(addr)
+                if "PREF" in params:
+                    card["pref_email"] = addr
+        elif name == "TEL":
+            if not card["tel"]:
+                card["tel"] = _vcard_unescape(value).strip()
+        elif name == "ADR":
+            comps = [_vcard_unescape(c).strip() for c in _vcard_split(value, ";")]
+            card["adr"] = ", ".join(c for c in comps if c)
+        elif name == "LABEL":
+            card["label"] = _vcard_unescape(value).replace("\n", ", ").strip(", ")
+        elif name == "CATEGORIES":
+            for c in _vcard_split(value, ","):
+                c = _vcard_unescape(c).strip()
+                if c:
+                    card["categories"].append(c)
+    return rows
+
+
 # ---- commands ---------------------------------------------------------------
+def _merge_and_write(args, new_rows):
+    """Merge contact rows into the DB at args.out (existing file + this batch)."""
+    cpath = _resolve_db_out(args.out)
+    outdir = os.path.dirname(cpath)
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
+    # Merge into any existing file: counts overwritten with this import, emails
+    # and sources union, date range widens, hand-edited fields preserved; rows
+    # only in the old file kept. -f/--force ignores the existing file.
+    merged = {} if args.force else read_existing_rows(cpath)
+    n_existing = len(merged)
+    n_new = n_updated = 0
+    for row in new_rows:
+        key = row["primary_email"].lower()
+        if not key:
+            continue   # an email is required to key the contacts DB
+        if key in merged:
+            merge_row(merged[key], row)
+            n_updated += 1
+        else:
+            merged[key] = row
+            n_new += 1
+    rows = sorted(merged.values(), key=lambda r: (
+        r["company"] == "",
+        r["company"].lower(),
+        -r["num_emails"],
+        r["last_name"].lower(),
+        r["first_name"].lower(),
+    ))
+    write_rows(cpath, rows)
+    verb = "Overwrote" if args.force else "Merged into"
+    sys.stderr.write(
+        f"\n{verb} {cpath}\n"
+        f"  {n_existing:,} existing + {n_new:,} new "
+        f"({n_updated:,} updated) = {len(rows):,} contacts.\n")
+
+
 def cmd_import(args):
-    """Import a Gmail mbox or Outlook PST (args.input) into the contacts DB."""
+    """Import a Gmail mbox, Outlook PST, or vCard (args.input) into the DB."""
     path = args.input
     # Self addresses are auto-detected: the mbox Delivered-To header / the From
     # of Sent-folder (or Sent-labeled) mail.
@@ -975,14 +1213,25 @@ def cmd_import(args):
         sys.exit("error: input not found: %s" % path)
 
     pst = path.lower().endswith(".pst")
+    vcard = path.lower().endswith((".vcf", ".vcd"))
 
     # --llm: dump a per-email JSONL corpus (full bodies) and skip the contacts DB.
     if args.llm:
+        if vcard:
+            sys.exit("error: --llm requires an mbox or PST, not a vCard")
         src = (iter_pst_messages(path, body_cap=None) if pst
                else iter_mbox_messages(path, body_cap=None))
         out_path = _resolve_llm_out(args.out)
         n = dump_llm(src, out_path)
         sys.stderr.write(f"Wrote {n:,} email records to {out_path}\n")
+        return
+
+    # vCard input: contacts come straight from the cards (no message pipeline).
+    if vcard:
+        new_rows = parse_vcards(path)
+        sys.stderr.write(
+            f"Parsed {len(new_rows):,} contacts from {os.path.basename(path)}.\n")
+        _merge_and_write(args, new_rows)
         return
 
     blacklist = set()
@@ -1095,49 +1344,17 @@ def cmd_import(args):
         f"Contacts: {n_built:,} built -> {n_after_name:,} with full name "
         f"-> {n_kept:,} with correspondence.\n")
 
-    # -o may be a directory (writes contacts.json) or a file path. The format
-    # follows the extension: a .csv path exports CSV, otherwise JSON (native).
-    cpath = _resolve_db_out(args.out)
-    outdir = os.path.dirname(cpath)
-    if outdir:
-        os.makedirs(outdir, exist_ok=True)
-
-    # Merge into any existing file: counts are overwritten with this import,
-    # emails union and the date range widens, and hand-edited fields (e.g. type)
-    # are preserved. Contacts present only in the old file are kept untouched.
-    # With -f/--force, ignore the existing file and overwrite it.
-    merged = {} if args.force else read_existing_rows(cpath)
-    n_existing = len(merged)
-    n_new = n_updated = 0
     source = os.path.basename(path)
-    for p in people:
-        row = person_to_row(p, source)
-        key = row["primary_email"].lower()
-        if key in merged:
-            merge_row(merged[key], row)
-            n_updated += 1
-        else:
-            merged[key] = row
-            n_new += 1
-
-    rows = sorted(merged.values(), key=lambda r: (
-        r["company"] == "",
-        r["company"].lower(),
-        -r["num_emails"],
-        r["last_name"].lower(),
-        r["first_name"].lower(),
-    ))
-    write_rows(cpath, rows)
-
-    verb = "Overwrote" if args.force else "Merged into"
-    sys.stderr.write(
-        f"\n{verb} {cpath}\n"
-        f"  {n_existing:,} existing + {n_new:,} new "
-        f"({n_updated:,} updated) = {len(rows):,} contacts.\n")
+    new_rows = [person_to_row(p, source) for p in people]
+    _merge_and_write(args, new_rows)
 
 
-def cmd_list(args):
-    """List matching addresses from a contacts file (JSON or CSV, args.input)."""
+def cmd_export(args):
+    """Export matching contact records to CSV or vCard (.csv/.vcf, by -o suffix)."""
+    out = args.output
+    ext = os.path.splitext(out)[1].lower()
+    if ext not in (".csv", ".vcf"):
+        sys.exit("error: -o must end in .csv or .vcf")
     if args.type:
         bad = [t for t in (_csv_set(args.type) or set()) if t not in TYPE_VALUES]
         if bad:
@@ -1146,18 +1363,16 @@ def cmd_list(args):
     contacts = load_rows(args.input)
     crit = build_criteria(args)
     selected = [c for c in contacts if matches(c, crit)]
-    addrs = select_addresses(selected, args.all_emails)
 
-    line = ", ".join(addrs)
-    if args.output:
-        with open(args.output, "w", encoding="utf-8") as out:
-            out.write(line + "\n")
+    outdir = os.path.dirname(os.path.abspath(out))
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
+    if ext == ".vcf":
+        write_vcards(out, selected)
     else:
-        print(line)
-
+        write_csv_rows(out, selected)
     sys.stderr.write(
-        f"Matched {len(selected):,}/{len(contacts):,} contacts, "
-        f"{len(addrs):,} addresses.\n")
+        f"Exported {len(selected):,}/{len(contacts):,} contacts to {out}\n")
 
 
 def cmd_dedup(args):
@@ -1185,9 +1400,9 @@ def parse_args(argv=None):
 
     # mc import -i MBOX -o OUT [...]
     sc = sub.add_parser(
-        "import", help="import a Gmail mbox or Outlook PST into the database")
+        "import", help="import a Gmail mbox, Outlook PST, or vCard (.vcf)")
     sc.add_argument("-i", "--input", dest="input", required=True,
-                    help="path to the .mbox or .pst file to import")
+                    help="path to the .mbox, .pst, or .vcf/.vcd file to import")
     sc.add_argument("-o", dest="out", required=True,
                     help="output path: .json (native) or .csv (export); a "
                          "directory writes contacts.json. With --llm, the JSONL "
@@ -1202,15 +1417,13 @@ def parse_args(argv=None):
                          "corpus (subject/from/to/date/body) for LLM use")
     sc.set_defaults(func=cmd_import)
 
-    # mc list -i CONTACTS [filters...]
+    # mc export -i CONTACTS -o OUT.{csv,vcf} [filters...]
     ex = sub.add_parser(
-        "list", help="list matching addresses from the contacts database")
+        "export", help="export matching contacts to CSV or vCard")
     ex.add_argument("-i", "--input", dest="input", required=True,
                     help="path to the contacts JSON or CSV from 'mc import'")
-    ex.add_argument("-o", "--output", dest="output",
-                    help="write the address line to a file (default: stdout)")
-    ex.add_argument("--all-emails", action="store_true",
-                    help="emit every address per contact (default: primary only)")
+    ex.add_argument("-o", "--output", dest="output", required=True,
+                    help="output file; .csv (all columns) or .vcf (vCard 3.0)")
     ex.add_argument("--type", dest="type",
                     help="match contact type against any of LIST (%s)"
                          % "/".join(TYPE_VALUES))
@@ -1235,11 +1448,11 @@ def parse_args(argv=None):
                     help="first_interaction on or after this date")
     ex.add_argument("--first-before", dest="first_before", metavar="YYYY-MM-DD",
                     help="first_interaction on or before this date")
-    ex.set_defaults(func=cmd_list)
+    ex.set_defaults(func=cmd_export)
 
     # mc dedup -i CONTACTS -o OUT
     dd = sub.add_parser(
-        "dedup", help="merge contacts that share a first+last name")
+        "dedup", help="deduplicate contacts that share a first+last name")
     dd.add_argument("-i", "--input", dest="input", required=True,
                     help="path to the contacts JSON or CSV to deduplicate")
     dd.add_argument("-o", "--output", dest="output", required=True,

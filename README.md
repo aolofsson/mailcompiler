@@ -1,8 +1,8 @@
 # MailCompiler
 
 Build and query a personal contacts database from a Gmail Takeout mailbox.
-`mc import` turns an `.mbox` into a `contacts.json` database; `mc list` queries
-it and emits matching email addresses.
+`mc import` turns an `.mbox` into a `contacts.json` database; `mc export` writes
+a filtered subset to CSV or a Gmail-compatible vCard.
 
 ## Install (development)
 
@@ -15,7 +15,7 @@ pip install -e ".[dev]"          # provides the `mc` command
 
 ```
 mc import  -i MBOX|PST -o OUT [...]           build/merge the contacts DB
-mc list    -i CONTACTS [filters...]           list matching addresses
+mc export  -i CONTACTS -o OUT.{csv,vcf}       export matching records
 mc dedup   -i CONTACTS -o OUT                 merge same-name contacts
 ```
 
@@ -27,16 +27,24 @@ Without installing, run it as a module: `python -m mailcompiler.mailcompiler <co
 
 ## Building the contacts database
 
-`mc import` parses a Gmail Takeout `.mbox` **or** an Outlook `.pst` (chosen by
-the `-i` file extension) into `contacts.json`. Contacts are people you have
-corresponded with (sent to or heard from), with automated/bulk senders, spam,
-and nameless entries filtered out. Identities are merged by display name, and
-company is derived from the email domain.
+`mc import` reads a Gmail Takeout `.mbox`, an Outlook `.pst`, or a vCard
+`.vcf`/`.vcd` (chosen by the `-i` file extension) into `contacts.json`. From a
+mailbox, contacts are the people you have corresponded with (sent to or heard
+from), with automated/bulk senders, spam, and nameless entries filtered out,
+identities merged by display name, and company derived from the email domain.
 
 ```bash
 mc import -i "/path/to/Takeout/Mail/All mail Including Spam and Trash.mbox" -o data
 mc import -i "/path/to/archive.pst" -o data       # Outlook PST
+mc import -i "/path/to/contacts.vcf" -o data      # vCard (e.g. a Gmail export)
 ```
+
+Importing a **vCard** adds its contacts directly (no message filtering): it maps
+N/FN, ORG, TITLE, TEL, ADR, every EMAIL, and `CATEGORIES` (a category matching a
+legal `type` value sets the type; a `friend` category sets the friend flag).
+Email counts default to 0 and a contact with no email address is skipped. This
+merges into the database like any other import, so you can fold a vCard export
+into an mbox-built database.
 
 `-i` and `-o` are required. The output format follows the `-o` extension:
 `.json` is the native database, `.csv` exports CSV; a directory (as above)
@@ -124,36 +132,40 @@ mc import --llm -i archive.pst  -o data            # writes data/emails.jsonl
 The JSONL is streamed as messages are read, so it scales to very large mailboxes
 without holding everything in memory.
 
-## Querying contacts
+## Exporting contacts
 
-`mc list` selects a subset of contacts by per-column criteria and prints
-their email addresses on one comma-separated line, ready to paste into a mail
-client To: field. Text filters take comma-separated lists (case-insensitive,
-match any); numeric and date filters are inclusive ranges; all filters combine
-with AND.
+`mc export` selects a subset of contacts by per-column criteria and writes the
+**whole record** for each match. The output format follows the `-o` extension
+(required):
 
-Note: `--company` matches the derived company *name* (e.g. `Globex`), while
+- **`.csv`** -- all database columns.
+- **`.vcf`** -- a Gmail-compatible **vCard 3.0** file (importable into Google
+  Contacts and Outlook), CRLF-delimited and line-folded to 75 octets.
+
+Text filters take comma-separated lists (case-insensitive, match any); numeric
+and date filters are inclusive ranges; all filters combine with AND. Note that
+`--company` matches the derived company *name* (e.g. `Globex`), while
 `--email-domain` matches the address domain (e.g. `globex.com`).
 
 ```bash
-# Customers and investors (the `type` column you filled in):
-mc list -i data/contacts.json --type customer,investor
+# Customers and investors (the `type` column you filled in) -> vCard:
+mc export -i data/contacts.json --type customer,investor -o leads.vcf
 
-# Everyone at Intel or AMD with at least 5 emails, active since 2024:
-mc list -i data/contacts.json \
-  --company Intel,AMD --min-emails 5 --last-after 2024-01-01
+# Everyone at Intel or AMD with at least 5 emails, active since 2024 -> CSV:
+mc export -i data/contacts.json \
+  --company Intel,AMD --min-emails 5 --last-after 2024-01-01 -o intel_amd.csv
 
-# All intel.com addresses you've corresponded with since 2025:
-mc list -i data/contacts.json \
-  --email-domain intel.com --last-after 2025-01-01
-
-# Every known address (not just primary) for a company, written to a file:
-mc list -i data/contacts.json \
-  --company globex --all-emails -o segment.txt
+# All intel.com contacts since 2025 -> vCard:
+mc export -i data/contacts.json \
+  --email-domain intel.com --last-after 2025-01-01 -o intel.vcf
 ```
 
+The vCard maps name/emails (primary marked `PREF`), `company`->ORG,
+`title`->TITLE, `phone`->TEL, `address`->ADR/LABEL, and `type`/`friend`->
+CATEGORIES, plus a NOTE with the email counts and last-contact date.
+
 `--type` accepts only the legal values (`customer`, `competitor`, `investor`,
-`reporter`, `partner`, `vendor`, `other`). See `mc list -h` for the full set of
+`reporter`, `partner`, `vendor`, `other`). See `mc export -h` for the full set of
 filters (`--type`, `--first-name`, `--last-name`, `--min/max-emails`,
 `--min/max-sent`, `--min/max-received`, `--first-after/before`,
 `--last-after/before`).

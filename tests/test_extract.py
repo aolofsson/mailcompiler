@@ -1,7 +1,7 @@
 """Unit tests for the contact extraction/query helpers."""
 
 from mailcompiler.mailcompiler import (
-    matches, parse_args, build_criteria, select_addresses,
+    matches, parse_args, build_criteria,
 )
 
 CONTACTS = [
@@ -27,7 +27,7 @@ CONTACTS = [
 
 def crit(**kw):
     """Build a criteria dict via the real arg parser for fidelity."""
-    argv = ["list", "-i", "x.csv"]
+    argv = ["export", "-i", "x.csv", "-o", "out.csv"]
     for k, v in kw.items():
         argv += ["--" + k.replace("_", "-"), str(v)]
     return build_criteria(parse_args(argv))
@@ -52,19 +52,21 @@ class TestTextFilters:
         assert run(email_domain="northwind.com") == ["Dana"]
 
 
+_BASE = ["export", "-i", "x.csv", "-o", "out.csv"]
+
+
 class TestTypeFilter:
     def test_type_match(self):
-        c = build_criteria(parse_args(["list", "-i", "x.csv",
-                                       "--type", "customer"]))
+        c = build_criteria(parse_args(_BASE + ["--type", "customer"]))
         assert [x["first_name"] for x in CONTACTS if matches(x, c)] == ["Anna"]
 
     def test_no_type_flag_matches_all(self):
-        c = build_criteria(parse_args(["list", "-i", "x.csv"]))
+        c = build_criteria(parse_args(_BASE))
         assert len([x for x in CONTACTS if matches(x, c)]) == len(CONTACTS)
 
     def test_type_combines_with_other_filters(self):
         c = build_criteria(parse_args(
-            ["list", "-i", "x.csv", "--type", "customer", "--company", "Globex"]))
+            _BASE + ["--type", "customer", "--company", "Globex"]))
         # Anna is customer but not Globex; nobody is both -> none.
         assert [x["first_name"] for x in CONTACTS if matches(x, c)] == []
 
@@ -94,18 +96,3 @@ class TestDateFilters:
     def test_null_date_excluded_by_filter(self):
         # Sam has null dates and must be excluded once a date bound is active.
         assert "Sam" not in run(last_after="2000-01-01")
-
-
-class TestSelectAddresses:
-    def test_primary_only(self):
-        addrs = select_addresses(CONTACTS, all_emails=False)
-        assert "jordan.vale@globex.com" not in addrs
-        assert "jordan@globex.com" in addrs
-
-    def test_all_emails(self):
-        addrs = select_addresses(CONTACTS, all_emails=True)
-        assert "jordan.vale@globex.com" in addrs
-
-    def test_dedup_preserves_order(self):
-        dup = [CONTACTS[0], CONTACTS[0]]
-        assert select_addresses(dup, all_emails=False) == ["dana@northwind.com"]
