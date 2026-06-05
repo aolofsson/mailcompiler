@@ -1,6 +1,6 @@
 # MailCompiler
 
-MailCompiler turns a mailbox into a clean, queryable contacts database. It scans
+MailCompiler turns a mailbox into a clean, queryable JSON contacts database. It scans
 your email archive (Gmail Takeout `.mbox` or Outlook `.pst`), works out who you
 actually correspond with, merges each person's addresses and signature details
 into one record, and lets you annotate, query, and export those contacts to CSV
