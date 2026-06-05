@@ -1,39 +1,35 @@
 # MailCompiler
 
-MailCompiler turns a mailbox into a clean, queryable JSON contacts database. It scans
-your email archive (Gmail Takeout `.mbox` or Outlook `.pst`), works out who you
-actually correspond with, merges each person's addresses and signature details
-into one record, and lets you annotate, query, and export those contacts to CSV
-or vCard for Google Contacts and Outlook.
+MailCompiler is a utility for reclaiming control over emails and contacts via
+automatic imports from .mbox and .pst exports into a human readableJ JSON
+database.
+
+## Motivation
+- You need to own your our data!!
+- Scraping your own inbox to put together outreach lists is a waste of life
+- CRMs are awful
+- Email client import/output is barely functional
+- Email client search functions are completely broken
 
 ## Key features
 
-- **Scans large mailboxes** -- streams a Gmail Takeout `.mbox` (handles 20 GB+)
-  or an Outlook `.pst`, selected automatically by file extension.
-- **Finds real contacts** -- keeps people you exchanged mail with; drops spam,
-  automated/bulk senders (no-reply, mailing lists, bulk ESPs) and nameless
-  entries; merges a person's multiple addresses into one record.
-- **Enriches records** -- derives company from the email domain and pulls a
-  phone number from the sender's signature (validated/normalized to E.164).
-- **Manual annotations preserved** -- blank `type` (customer/competitor/
-  investor/reporter/partner/vendor/other), `friend`, `title`, and `address`
-  columns you fill in survive re-imports.
-- **Incremental & non-destructive** -- re-running merges into the existing
-  database without clobbering manual edits; `mc dedup` collapses same-name
-  duplicates.
-- **Imports contacts, not just mail** -- reads vCard (`.vcf`/`.vcd`) and
-  Outlook-format CSV (`--outlook`) directly into the database.
-- **Flexible export** -- filter by company, type, email volume, dates, name, or
-  domain and write a CSV, a Gmail-compatible vCard 3.0, or an Outlook CSV.
-- **LLM corpus** -- `mc import --llm` dumps the mailbox as per-email JSONL
-  (subject/from/to/date/body) for feeding to a model.
-- **Portable storage** -- native JSON database with a lossless CSV equivalent.
+- Import from Gmail Takeout `.mbox` and Outlook `.pst`(handles 20 GB+)
+- Automatic extraction of email conversations into contacts
+- Automatic extraction of phone numbers from email signatures
+- Import/export support for VCARD (3.0) and CSV (Outlook) contact lists
+- Streaming .mbox into LLM frindly JSONL corpus
+- Incremental non-destructive merging of multiple JSON databases
+- Deduplication of records
+- Black list email list support
+- Automatic filtering of bot farm email addresses
+- Record filtering on export
 
 ## Install (development)
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"          # provides the `mc` command
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
 ```
 
 `mc` has one subcommand per operation, all with a uniform `-i/--input`:
