@@ -68,6 +68,11 @@ Then, across all imported addresses:
 
 - Multiple addresses for the **same person** (matching display name) are merged
   into one row; the most-used address becomes the primary email.
+- `phone` is pulled from the contact's **email signature** in mail they sent you
+  (the signature region only -- bottom of the message / labeled lines). The
+  most-frequently-seen number is kept, validated and normalized to `+E.164` via
+  [phonenumbers](https://github.com/daviddrysdale/python-phonenumbers); numbers
+  written without a country code are assumed US.
 - `company` is derived from the email domain (blank for free providers like
   gmail/yahoo/outlook), and each row records sent/received counts, the first and
   last interaction dates, and the `source` filename (the `.mbox`/`.pst` it came

@@ -30,11 +30,22 @@ import re
 import sys
 from collections import defaultdict
 from datetime import timezone
-from email.parser import HeaderParser
+from email.parser import HeaderParser, Parser
 from email.header import decode_header, make_header
 from email.utils import getaddresses, parsedate_to_datetime
 
+import phonenumbers
+
 SEP = re.compile(r'^From \d+@xxx ')
+
+# Phone extraction from signatures.
+DEFAULT_REGION = "US"          # assumed country for code-less numbers
+BODY_CAP = 64 * 1024           # max body bytes captured per message
+SIG_TAIL_LINES = 12            # signature = last N lines when no "-- " marker
+_REPLY_MARKER = re.compile(
+    r'^(on .*wrote:|-+\s*original message\s*-+|from:\s|sent from my )',
+    re.IGNORECASE)
+_HTML_TAG = re.compile(r'<[^>]+>')
 
 FREE_PROVIDERS = {
     "gmail.com", "googlemail.com", "yahoo.com", "yahoo.co.uk", "ymail.com",
@@ -174,11 +185,13 @@ def company_from(email_addr):
 
 # ---- per-address accumulator ------------------------------------------------
 class Rec:
-    __slots__ = ("emails", "names", "num_sent", "num_recv", "first", "last")
+    __slots__ = ("emails", "names", "phones", "num_sent", "num_recv",
+                 "first", "last")
 
     def __init__(self):
         self.emails = defaultdict(int)   # email -> count
         self.names = defaultdict(int)    # display name -> count
+        self.phones = defaultdict(int)   # E.164 phone -> count (from signatures)
         self.num_sent = 0                # I -> them
         self.num_recv = 0                # them -> I
         self.first = None
@@ -194,9 +207,9 @@ class Rec:
 
 
 # ---- CSV output / additive merge -------------------------------------------
-CSV_FIELDS = ["vip", "last_name", "first_name", "company", "primary_email",
-              "emails", "num_emails", "num_sent", "num_received",
-              "first_interaction", "last_interaction", "source"]
+CSV_FIELDS = ["vip", "last_name", "first_name", "company", "phone",
+              "primary_email", "emails", "num_emails", "num_sent",
+              "num_received", "first_interaction", "last_interaction", "source"]
 
 # Source values may contain spaces (mbox filenames), so they are joined with
 # this separator rather than a space (which the emails column uses).
@@ -217,6 +230,7 @@ def person_to_row(p, source):
         "last_name": p["last_name"],
         "first_name": p["first_name"],
         "company": p["company"],
+        "phone": p.get("phone", ""),
         "primary_email": p["primary_email"],
         "emails": list(p["emails"]),
         "num_emails": p["num_emails"],
@@ -241,6 +255,7 @@ def _normalize_row(d):
         "last_name": str(d.get("last_name") or "").strip(),
         "first_name": str(d.get("first_name") or "").strip(),
         "company": str(d.get("company") or "").strip(),
+        "phone": str(d.get("phone") or "").strip(),
         "primary_email": str(d.get("primary_email") or "").strip(),
         "emails": list(emails),
         "num_emails": _to_int(d.get("num_emails")),
@@ -298,7 +313,7 @@ def merge_row(existing, new):
     are preserved; counts are overwritten with the latest import; emails and
     sources union; the date range widens."""
     existing["vip"] = existing["vip"] or new["vip"]
-    for f in ("last_name", "first_name", "company"):
+    for f in ("last_name", "first_name", "company", "phone"):
         existing[f] = existing[f] or new[f]
     for e in new["emails"]:
         if e not in existing["emails"]:
@@ -329,8 +344,8 @@ def write_csv_rows(path, rows):
         for r in rows:
             w.writerow([
                 r["vip"], r["last_name"], r["first_name"], r["company"],
-                r["primary_email"], " ".join(r["emails"]), r["num_emails"],
-                r["num_sent"], r["num_received"],
+                r.get("phone", ""), r["primary_email"], " ".join(r["emails"]),
+                r["num_emails"], r["num_sent"], r["num_received"],
                 r["first_interaction"] or "", r["last_interaction"] or "",
                 r.get("source", ""),
             ])
@@ -447,6 +462,86 @@ def select_addresses(contacts, all_emails):
     return out
 
 
+# ---- body / phone extraction ------------------------------------------------
+def _decode_part(part):
+    """Decode one non-multipart MIME part to text using its declared charset."""
+    try:
+        payload = part.get_payload(decode=True)
+        if payload is None:
+            return ""
+        charset = part.get_content_charset() or "utf-8"
+        return payload.decode(charset, "replace")
+    except Exception:
+        return ""
+
+
+def _message_text(m):
+    """Return a message's plain-text body (HTML stripped if needed), capped.
+
+    Uses the legacy email API (walk over parts) so it is lenient with the messy,
+    possibly truncated messages produced by the capped mbox capture.
+    """
+    plain = html = ""
+    try:
+        for part in m.walk():
+            if part.get_content_maintype() == "multipart":
+                continue
+            if part.get_content_disposition() == "attachment":
+                continue
+            ctype = part.get_content_type()
+            if ctype == "text/plain" and not plain:
+                plain = _decode_part(part)
+            elif ctype == "text/html" and not html:
+                html = _decode_part(part)
+    except Exception:
+        pass
+    if plain:
+        return plain[:BODY_CAP]
+    if html:
+        return _HTML_TAG.sub(" ", html)[:BODY_CAP]
+    return ""
+
+
+def _signature_text(body):
+    """Return just the signature region: the fresh (non-quoted) tail of a body,
+    after a '-- ' delimiter if present, else its last SIG_TAIL_LINES lines."""
+    if not body:
+        return ""
+    lines = body.splitlines()
+    cut = len(lines)
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if s.startswith(">") or _REPLY_MARKER.match(s):
+            cut = i
+            break
+    top = lines[:cut]
+    sig_start = 0
+    for i, ln in enumerate(top):
+        if ln.strip() == "--":
+            sig_start = i + 1
+    sig = top[sig_start:] if sig_start else top[-SIG_TAIL_LINES:]
+    return "\n".join(sig)
+
+
+def _extract_phones(body, region=DEFAULT_REGION):
+    """Return de-duped E.164 phone numbers found in a body's signature region."""
+    out = []
+    for line in _signature_text(body).splitlines():
+        if "fax" in line.lower():
+            continue
+        try:
+            matches = phonenumbers.PhoneNumberMatcher(line, region)
+            for match in matches:
+                if phonenumbers.is_valid_number(match.number):
+                    e164 = phonenumbers.format_number(
+                        match.number, phonenumbers.PhoneNumberFormat.E164)
+                    if e164 not in out:
+                        out.append(e164)
+        except Exception:
+            continue
+    return out
+
+
 # ---- message ingestion ------------------------------------------------------
 # Each source (mbox / PST) yields a normalized message dict:
 #   {"from": [(name, addr), ...], "to": [(name, addr), ...]  (To+Cc),
@@ -493,8 +588,10 @@ def _ingest_message(msg, recs, self_set):
         for a in from_emails:        # learn self addresses
             self_set.add(a)
         pairs, attr = msg["to"], "num_sent"
+        phones = []                  # never trust our own signature
     else:
         pairs, attr = msg["from"], "num_recv"
+        phones = _extract_phones(msg.get("body", ""))
 
     for raw_name, addr in pairs:
         addr = (addr or "").lower().strip()
@@ -505,14 +602,22 @@ def _ingest_message(msg, recs, self_set):
         nm = dec(raw_name).strip()
         if nm and "@" not in nm:
             r.names[nm] += 1
+        for ph in phones:            # signature phones (received mail only)
+            r.phones[ph] += 1
         setattr(r, attr, getattr(r, attr) + 1)
         r.touch(dt)
     return True
 
 
 def iter_mbox_messages(path):
-    """Yield normalized messages from a Gmail Takeout mbox (streamed)."""
-    parser = HeaderParser()
+    """Yield normalized messages from a Gmail Takeout mbox (streamed).
+
+    Each message block is captured up to BODY_CAP bytes (headers + the start of
+    the body, where the text part and signature live) and fully MIME-parsed so a
+    plain-text body is available for phone extraction. Larger trailing content
+    (e.g. attachments) is skipped to bound memory/CPU.
+    """
+    parser = Parser()
 
     def normalize(block):
         m = parser.parsestr("".join(block))
@@ -528,23 +633,22 @@ def iter_mbox_messages(path):
             "is_sent": "Sent" in labels,
             "is_spam": "Spam" in labels,
             "self_hints": [a for _, a in getaddresses(m.get_all("Delivered-To", [])) if a],
+            "body": _message_text(m),
         }
 
     with open(path, "r", encoding="latin-1", errors="replace") as fh:
         buf = []
-        in_header = True
+        size = 0
         for line in fh:
             if SEP.match(line):
                 if buf:
                     yield normalize(buf)
                 buf = []
-                in_header = True
+                size = 0
                 continue
-            if in_header:
-                if line in ("\n", "\r\n"):
-                    in_header = False  # end of headers; ignore body
-                else:
-                    buf.append(line)
+            if size < BODY_CAP:       # capture headers + capped body
+                buf.append(line)
+                size += len(line)
         if buf:
             yield normalize(buf)
 
@@ -578,6 +682,19 @@ def _pst_date(message):
     return None
 
 
+def _pst_body(message):
+    """Return a pypff message's plain-text body (capped), or ''."""
+    try:
+        body = message.plain_text_body
+    except Exception:
+        body = None
+    if not body:
+        return ""
+    if isinstance(body, bytes):
+        body = body.decode("utf-8", "replace")
+    return body[:BODY_CAP]
+
+
 def _pst_message_fields(message, folder_name):
     """Normalize one pypff message (in `folder_name`) into a message dict.
 
@@ -589,6 +706,7 @@ def _pst_message_fields(message, folder_name):
     fname = (folder_name or "").strip().lower()
     is_sent = fname in PST_SENT_FOLDERS
     is_spam = fname in PST_SPAM_FOLDERS
+    body = _pst_body(message)
 
     try:
         headers = message.transport_headers
@@ -608,6 +726,7 @@ def _pst_message_fields(message, folder_name):
             "is_sent": is_sent,
             "is_spam": is_spam,
             "self_hints": [],
+            "body": body,
         }
 
     # MAPI fallback (no transport headers).
@@ -624,6 +743,7 @@ def _pst_message_fields(message, folder_name):
         "is_sent": is_sent,
         "is_spam": is_spam,
         "self_hints": [],
+        "body": body,
     }
 
 
@@ -747,6 +867,8 @@ def cmd_import(args):
                 merged.emails[e] += c
             for nm, c in r.names.items():
                 merged.names[nm] += c
+            for ph, c in r.phones.items():
+                merged.phones[ph] += c
             merged.num_sent += r.num_sent
             merged.num_recv += r.num_recv
             merged.touch(r.first)
@@ -755,10 +877,13 @@ def cmd_import(args):
         primary = max(merged.emails, key=merged.emails.get)
         display = max(merged.names, key=merged.names.get) if merged.names else ""
         first, last = split_name(display, primary)
+        # phone = most-frequently-seen signature number, if any
+        phone = max(merged.phones, key=merged.phones.get) if merged.phones else ""
         return {
             "first_name": first,
             "last_name": last,
             "company": company_from(primary),
+            "phone": phone,
             "primary_email": primary,
             "emails": sorted(merged.emails, key=lambda e: -merged.emails[e]),
             "display_name": display,

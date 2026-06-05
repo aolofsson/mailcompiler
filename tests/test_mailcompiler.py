@@ -8,6 +8,7 @@ from mailcompiler.mailcompiler import (
     clean, company_from, is_bot, split_name, is_blacklisted, merge_row,
     person_to_row, load_rows, write_rows,
     Rec, _ingest_message, _pst_message_fields, _MAPI_SENDER_SMTP,
+    _signature_text, _extract_phones,
 )
 
 
@@ -95,7 +96,8 @@ class TestMergeRow:
     def _existing(self):
         return {
             "vip": "Y", "last_name": "Lee", "first_name": "Anna",
-            "company": "Initech", "primary_email": "anna@initech.com",
+            "company": "Initech", "phone": "+16502530000",
+            "primary_email": "anna@initech.com",
             "emails": ["anna@initech.com"], "num_emails": 10, "num_sent": 4,
             "num_received": 6, "first_interaction": "2023-01-01",
             "last_interaction": "2024-01-01", "source": "alpha.mbox",
@@ -104,7 +106,8 @@ class TestMergeRow:
     def _new(self):
         return {
             "vip": "", "last_name": "Lee", "first_name": "Anna",
-            "company": "Initech", "primary_email": "anna@initech.com",
+            "company": "Initech", "phone": "+14155552671",
+            "primary_email": "anna@initech.com",
             "emails": ["anna@initech.com", "anna.lee@initech.com"],
             "num_emails": 5, "num_sent": 2, "num_received": 3,
             "first_interaction": "2022-06-01", "last_interaction": "2025-03-15",
@@ -145,6 +148,17 @@ class TestMergeRow:
         merge_row(e, self._new())
         assert e["source"] == "alpha.mbox | beta.mbox"
 
+    def test_phone_preserved(self):
+        e = self._existing()                 # has +16502530000
+        merge_row(e, self._new())            # new has a different phone
+        assert e["phone"] == "+16502530000"  # existing value kept
+
+    def test_phone_filled_when_empty(self):
+        e = self._existing()
+        e["phone"] = ""
+        merge_row(e, self._new())
+        assert e["phone"] == "+14155552671"
+
 
 class TestPersonToRow:
     def test_tags_source(self):
@@ -160,7 +174,8 @@ class TestPersonToRow:
 class TestRoundTrip:
     ROWS = [{
         "vip": "Y", "last_name": "Vale", "first_name": "Jordan",
-        "company": "Globex", "primary_email": "jordan@globex.com",
+        "company": "Globex", "phone": "+16502530000",
+        "primary_email": "jordan@globex.com",
         "emails": ["jordan@globex.com", "jordan.vale@globex.com"],
         "num_emails": 3, "num_sent": 2, "num_received": 1,
         "first_interaction": "2023-01-01", "last_interaction": "2024-05-05",
@@ -193,10 +208,11 @@ class TestRoundTrip:
         assert r["last_interaction"] == "2024-05-05"
 
 
-def _msg(frm=None, to=None, is_sent=False, is_spam=False, self_hints=None):
+def _msg(frm=None, to=None, is_sent=False, is_spam=False, self_hints=None,
+         body=""):
     return {"from": frm or [], "to": to or [], "date": None,
             "is_sent": is_sent, "is_spam": is_spam,
-            "self_hints": self_hints or []}
+            "self_hints": self_hints or [], "body": body}
 
 
 class TestIngestMessage:
@@ -232,6 +248,49 @@ class TestIngestMessage:
         # From is self -> treated as sent; the (empty) recipient list adds nobody.
         _ingest_message(_msg(frm=[("Me", "me@self.com")]), recs, {"me@self.com"})
         assert not recs
+
+    def test_received_signature_phone_recorded(self):
+        recs = defaultdict(Rec)
+        body = "Thanks,\nBob\n--\nBob Jones\nMobile: (650) 253-0000\n"
+        _ingest_message(_msg(frm=[("Bob", "bob@x.com")], body=body), recs, set())
+        assert recs["bob@x.com"].phones.get("+16502530000") == 1
+
+    def test_sent_signature_phone_ignored(self):
+        recs, ss = defaultdict(Rec), set()
+        body = "Regards,\nMe\n--\nMe\nMobile: (650) 253-0000\n"
+        _ingest_message(_msg(frm=[("Me", "me@self.com")],
+                             to=[("Bob", "bob@x.com")], is_sent=True,
+                             body=body), recs, ss)
+        assert not recs["bob@x.com"].phones   # our own signature is not theirs
+
+
+class TestSignatureText:
+    def test_after_dash_delimiter(self):
+        body = "Hi there\nbody line\n--\nAlice\nTel: 1\n"
+        sig = _signature_text(body)
+        assert "Alice" in sig and "body line" not in sig
+
+    def test_quoted_reply_excluded(self):
+        body = "Thanks!\n\nOn Mon, X wrote:\n> call (650) 253-0000\n"
+        assert "650" not in _signature_text(body)
+
+
+class TestExtractPhones:
+    def test_labeled_us_number(self):
+        body = "Best,\nBob\n--\nBob\nMobile: (650) 253-0000\n"
+        assert _extract_phones(body) == ["+16502530000"]
+
+    def test_explicit_international(self):
+        body = "--\nDana\nTel: +44 20 7031 3000\n"
+        assert _extract_phones(body) == ["+442070313000"]
+
+    def test_number_only_in_quote_ignored(self):
+        body = "Cheers\n\nOn Tue someone wrote:\n> reach me at (650) 253-0000\n"
+        assert _extract_phones(body) == []
+
+    def test_non_phone_not_matched(self):
+        body = "--\nOrder #1234567 shipped on 2024-01-02\n"
+        assert _extract_phones(body) == []
 
 
 class _Entry:
