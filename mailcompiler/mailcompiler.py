@@ -303,11 +303,6 @@ def load_rows(path):
             if str(d.get("primary_email") or "").strip()]
 
 
-def read_existing_rows(path):
-    """Read an existing contacts file into {primary_email_lower: row dict}."""
-    return {r["primary_email"].lower(): r for r in load_rows(path)}
-
-
 def _merge_date(a, b, newest):
     vals = [d for d in (a, b) if d]
     if not vals:
@@ -377,15 +372,6 @@ def write_json_rows(path, rows):
         json.dump(ordered, out, indent=2, ensure_ascii=False)
         out.write("\n")
     _write_atomic(path, _w)
-
-
-def write_rows(path, rows):
-    """Write contacts to `path`. JSON is the native store; a .csv path exports
-    the same records as CSV."""
-    if path.lower().endswith(".csv"):
-        write_csv_rows(path, rows)
-    else:
-        write_json_rows(path, rows)
 
 
 # ---- Outlook CSV layout -----------------------------------------------------
@@ -880,15 +866,69 @@ def _is_noreply(pairs):
     return False
 
 
-def _resolve_llm_out(out):
-    """Resolve the JSONL corpus path: a file without a .jsonl/.json suffix gets
-    .jsonl appended."""
-    if os.path.isdir(out) or out.endswith(os.sep):
-        sys.exit("error: -o must be a file path, not a directory: %s" % out)
-    out = os.path.abspath(out)
-    if os.path.splitext(out)[1].lower() not in (".jsonl", ".json"):
-        out += ".jsonl"
+# Canonical extension appended to a bare -o name lacking one, per format.
+_FMT_EXT = {"json": ".json", "csv": ".csv", "outlook": ".csv",
+            "vcard": ".vcf", "jsonl": ".jsonl"}
+
+
+def _resolve_out(path, fmt):
+    """Resolve an output path. A directory is rejected; a bare name without an
+    extension gets the format's canonical suffix appended."""
+    if os.path.isdir(path) or path.endswith(os.sep):
+        sys.exit("error: -o must be a file path, not a directory: %s" % path)
+    out = os.path.abspath(path)
+    if not os.path.splitext(out)[1]:
+        out += _FMT_EXT.get(fmt, "")
     return out
+
+
+def write_contacts_as(path, rows, fmt):
+    """Write contact rows in the given output format (json/csv/outlook/vcard)."""
+    if fmt == "vcard":
+        write_vcards(path, rows)
+    elif fmt == "outlook":
+        write_outlook_csv(path, rows)
+    elif fmt == "csv":
+        write_csv_rows(path, rows)
+    else:  # json
+        write_json_rows(path, rows)
+
+
+def _read_existing_contacts(path, fmt):
+    """Read an existing output file (for --merge) as {primary_email_lower: row};
+    a missing file yields {}."""
+    if not os.path.isfile(path):
+        return {}
+    if fmt == "vcard":
+        rows = parse_vcards(path)
+    elif fmt == "outlook":
+        rows = parse_outlook_csv(path)
+    else:  # json or native csv
+        rows = load_rows(path)
+    return {r["primary_email"].lower(): r for r in rows if r.get("primary_email")}
+
+
+def _contact_sort_key(r):
+    """Display order: named companies first, then by volume, then by name."""
+    return (r["company"] == "", r["company"].lower(), -r["num_emails"],
+            r["last_name"].lower(), r["first_name"].lower())
+
+
+def _fold_into(existing, new_rows):
+    """Fold new_rows into the existing {email: row} dict in place; returns
+    (n_new, n_updated)."""
+    n_new = n_updated = 0
+    for row in new_rows:
+        key = row["primary_email"].lower()
+        if not key:
+            continue   # an email is required to key the contacts DB
+        if key in existing:
+            merge_row(existing[key], row)
+            n_updated += 1
+        else:
+            existing[key] = row
+            n_new += 1
+    return n_new, n_updated
 
 
 def dump_llm(src, out_path):
@@ -998,17 +1038,6 @@ def dedup_contacts(rows):
         r["first_name"].lower(),
     ))
     return merged
-
-
-def _resolve_db_out(arg):
-    """Resolve a contacts-DB output path: a bare name without a .json/.csv suffix
-    -> .json appended."""
-    if os.path.isdir(arg) or arg.endswith(os.sep):
-        sys.exit("error: -o must be a file path, not a directory: %s" % arg)
-    out = os.path.abspath(arg)
-    if os.path.splitext(out)[1].lower() not in (".json", ".csv"):
-        out += ".json"
-    return out
 
 
 # ---- vCard export -----------------------------------------------------------
@@ -1226,37 +1255,20 @@ def parse_vcards(path):
 
 
 # ---- commands ---------------------------------------------------------------
-def _merge_and_write(args, new_rows):
-    """Merge contact rows into the DB at args.output (existing file + batch)."""
-    cpath = _resolve_db_out(args.output)
+def _merge_and_write(args, new_rows, ofmt):
+    """Write new_rows to args.output in ofmt. With --merge, fold into the
+    existing output file (counts overwritten with this batch, emails and sources
+    union, date range widens, hand-edited fields preserved, rows only in the old
+    file kept). Without --merge the output is written fresh (overwritten)."""
+    cpath = _resolve_out(args.output, ofmt)
     outdir = os.path.dirname(cpath)
     if outdir:
         os.makedirs(outdir, exist_ok=True)
-    # --merge folds this import into an existing file: counts overwritten with
-    # this import, emails and sources union, date range widens, hand-edited
-    # fields preserved, rows only in the old file kept. Without --merge the
-    # output is written fresh (any existing file is overwritten).
-    merged = read_existing_rows(cpath) if args.merge else {}
+    merged = _read_existing_contacts(cpath, ofmt) if args.merge else {}
     n_existing = len(merged)
-    n_new = n_updated = 0
-    for row in new_rows:
-        key = row["primary_email"].lower()
-        if not key:
-            continue   # an email is required to key the contacts DB
-        if key in merged:
-            merge_row(merged[key], row)
-            n_updated += 1
-        else:
-            merged[key] = row
-            n_new += 1
-    rows = sorted(merged.values(), key=lambda r: (
-        r["company"] == "",
-        r["company"].lower(),
-        -r["num_emails"],
-        r["last_name"].lower(),
-        r["first_name"].lower(),
-    ))
-    write_rows(cpath, rows)
+    n_new, n_updated = _fold_into(merged, new_rows)
+    rows = sorted(merged.values(), key=_contact_sort_key)
+    write_contacts_as(cpath, rows, ofmt)
     verb = "Merged into" if args.merge else "Wrote"
     sys.stderr.write(
         f"\n{verb} {cpath}\n"
@@ -1271,13 +1283,14 @@ def cmd_dump_llm(args, ifmt):
         sys.exit("error: input not found: %s" % path)
     src = (iter_pst_messages(path, body_cap=None) if ifmt == "pst"
            else iter_mbox_messages(path, body_cap=None))
-    out_path = _resolve_llm_out(args.output)
+    out_path = _resolve_out(args.output, "jsonl")
     n = dump_llm(src, out_path)
     sys.stderr.write(f"Wrote {n:,} email records to {out_path}\n")
 
 
-def cmd_import(args, ifmt):
-    """Import a mailbox, vCard, or Outlook CSV (args.input) into the JSON DB."""
+def cmd_import(args, ifmt, ofmt):
+    """Import a mailbox, vCard, or Outlook CSV (args.input) and write the
+    contacts in ofmt (a .json DB, .csv, Outlook CSV, or vCard)."""
     path = args.input
     # Self addresses are auto-detected: the mbox Delivered-To header / the From
     # of Sent-folder (or Sent-labeled) mail.
@@ -1291,7 +1304,7 @@ def cmd_import(args, ifmt):
         new_rows = parse_outlook_csv(path)
         sys.stderr.write(
             f"Parsed {len(new_rows):,} contacts from {os.path.basename(path)}.\n")
-        _merge_and_write(args, new_rows)
+        _merge_and_write(args, new_rows, ofmt)
         return
 
     # vCard input: contacts come straight from the cards (no message pipeline).
@@ -1299,7 +1312,7 @@ def cmd_import(args, ifmt):
         new_rows = parse_vcards(path)
         sys.stderr.write(
             f"Parsed {len(new_rows):,} contacts from {os.path.basename(path)}.\n")
-        _merge_and_write(args, new_rows)
+        _merge_and_write(args, new_rows, ofmt)
         return
 
     pst = ifmt == "pst"
@@ -1415,12 +1428,11 @@ def cmd_import(args, ifmt):
 
     source = os.path.basename(path)
     new_rows = [person_to_row(p, source) for p in people]
-    _merge_and_write(args, new_rows)
+    _merge_and_write(args, new_rows, ofmt)
 
 
 def cmd_export(args, ofmt):
     """Export matching contact records as CSV, Outlook CSV, or vCard."""
-    out = args.output
     if args.type:
         bad = [t for t in (_csv_set(args.type) or set()) if t not in TYPE_VALUES]
         if bad:
@@ -1430,33 +1442,51 @@ def cmd_export(args, ofmt):
     crit = build_criteria(args)
     selected = [c for c in contacts if matches(c, crit)]
 
-    outdir = os.path.dirname(os.path.abspath(out))
+    out = _resolve_out(args.output, ofmt)
+    outdir = os.path.dirname(out)
     if outdir:
         os.makedirs(outdir, exist_ok=True)
-    if ofmt == "vcard":
-        write_vcards(out, selected)
-    elif ofmt == "outlook":
-        write_outlook_csv(out, selected)
-    else:
-        write_csv_rows(out, selected)
+    write_contacts_as(out, selected, ofmt)
     sys.stderr.write(
         f"Exported {len(selected):,}/{len(contacts):,} contacts to {out}\n")
 
 
-def cmd_dedup(args):
-    """Merge contacts sharing a first+last name (args.input -> args.output)."""
+def cmd_db(args):
+    """Operate on a JSON contacts DB (json -> json): copy through, and/or
+    --merge the input into the existing output DB, and/or --dedup the result."""
     rows = load_rows(args.input)
     if not rows:
         sys.exit("error: no contacts found in %s" % args.input)
-    merged = dedup_contacts(rows)
-    out_path = _resolve_db_out(args.output)
+    out_path = _resolve_out(args.output, "json")
     outdir = os.path.dirname(out_path)
     if outdir:
         os.makedirs(outdir, exist_ok=True)
-    write_rows(out_path, merged)
-    sys.stderr.write(
-        f"Deduped {len(rows):,} rows -> {len(merged):,} contacts "
-        f"({len(rows) - len(merged):,} merged away) -> {out_path}\n")
+
+    n_input = len(rows)
+    n_existing = n_new = 0
+    if args.merge:
+        # Fold the input DB into the existing output DB as a batch.
+        existing = _read_existing_contacts(out_path, "json")
+        n_existing = len(existing)
+        n_new, _ = _fold_into(existing, rows)
+        rows = list(existing.values())
+    if args.dedup:
+        rows = dedup_contacts(rows)
+    rows = sorted(rows, key=_contact_sort_key)
+    write_json_rows(out_path, rows)
+
+    if args.merge:
+        extra = " then deduped" if args.dedup else ""
+        sys.stderr.write(
+            f"\nMerged into {out_path}{extra}\n"
+            f"  {n_existing:,} existing + {n_new:,} new from "
+            f"{os.path.basename(args.input)} = {len(rows):,} contacts.\n")
+    elif args.dedup:
+        sys.stderr.write(
+            f"Deduped {n_input:,} rows -> {len(rows):,} contacts "
+            f"({n_input - len(rows):,} merged away) -> {out_path}\n")
+    else:
+        sys.stderr.write(f"Wrote {len(rows):,} contacts -> {out_path}\n")
 
 
 # Recognized file formats. JSON is the native database; the rest are import
@@ -1482,9 +1512,10 @@ def parse_args(argv=None):
         prog="mc",
         description="mailcompiler: build and query a contacts database. The "
                     "operation is inferred from the -i/-o formats: a mailbox, "
-                    "vCard, or Outlook CSV input imports into a JSON DB; a JSON "
-                    "input exports (-o .csv/.vcf) or, with --dedup, "
-                    "deduplicates (-o .json).")
+                    "vCard, or Outlook CSV input imports into a contacts DB "
+                    "(.json/.csv/.vcf); a JSON input exports (-o .csv/.vcf), "
+                    "deduplicates (-o .json --dedup), or merges databases "
+                    "(-o .json --merge).")
     p.add_argument("-i", "--input", dest="input", required=True,
                    help="input path: a mailbox (.mbox/.pst), a vCard "
                         "(.vcf/.vcd), an Outlook CSV (--iformat outlook), or a "
@@ -1553,34 +1584,33 @@ def main(argv=None):
         if ifmt not in ("mbox", "pst"):
             sys.exit("error: --llm requires an mbox or PST input")
         if ofmt != "jsonl":
-            sys.exit("error: --llm writes a .jsonl corpus (-o ....jsonl)")
+            sys.exit("error: --llm writes a .jsonl corpus, so -o must be .jsonl")
         if args.dedup or args.merge:
             sys.exit("error: --llm cannot be combined with --dedup/--merge")
         return cmd_dump_llm(args, ifmt)
 
-    # Import: a mailbox / vCard / Outlook CSV -> the native JSON DB.
+    # Import: a mailbox / vCard / Outlook CSV builds contacts, written in the
+    # output format (.json DB, .csv, Outlook CSV, or .vcf).
     if ifmt in ("mbox", "pst", "vcard", "outlook"):
-        if ofmt != "json":
-            sys.exit("error: importing %s writes the native JSON database, so "
-                     "-o must be .json (export CSV/vCard from a JSON DB "
-                     "instead)" % ifmt)
+        if ofmt == "jsonl":
+            sys.exit("error: a .jsonl corpus is produced only with --llm")
         if args.dedup:
-            sys.exit("error: --dedup applies to a json -> json database, "
-                     "not an import")
-        return cmd_import(args, ifmt)
+            sys.exit("error: --dedup applies to a json -> json database, not "
+                     "an import; import to .json first, then dedup")
+        return cmd_import(args, ifmt, ofmt)
 
-    # JSON contacts DB input: dedup (json -> json) or export (-> csv/vcf).
+    # JSON contacts DB input.
     if ifmt == "json":
-        if args.merge:
-            sys.exit("error: --merge applies to an import, not a json input")
         if ofmt == "json":
-            if not args.dedup:
-                sys.exit("error: json -> json requires --dedup; to export, "
-                         "use a .csv or .vcf output")
-            return cmd_dedup(args)
+            # copy through, --merge another DB in, and/or --dedup the result
+            return cmd_db(args)
         if ofmt in ("csv", "outlook", "vcard"):
+            if args.merge:
+                sys.exit("error: --merge produces a JSON DB; drop --merge to "
+                         "export, or use a .json output to merge databases")
             if args.dedup:
-                sys.exit("error: --dedup only applies to a json -> json output")
+                sys.exit("error: --dedup only applies to a json -> json output; "
+                         "dedup to .json first, then export")
             return cmd_export(args, ofmt)
         sys.exit("error: cannot write %s from a JSON contacts DB" % ofmt)
 

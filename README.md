@@ -34,89 +34,101 @@ pip install -e .
 
 The MailCompiler command line utility is called 'mc'
 
-`mc` has one subcommand per operation, all with a uniform `-i/--input`:
+`mc` has no subcommands: the operation is inferred from the `-i`/`-o` file
+formats (taken from the extension, or forced with `--iformat`/`--oformat`). A
+mailbox, vCard, or Outlook CSV input **imports** into a contacts database; a
+JSON database input **exports** (to `.csv`/`.vcf`) or, with `--dedup`,
+**deduplicates** (to `.json`). JSON is the native database; CSV and vCard are
+interchange formats.
 
 ```
-mc import  -i MBOX|PST|VCF|CSV -o contacts.json [...]  build/merge the contacts DB
-mc export  -i contacts.json -o out.{csv,vcf}           export matching records
-mc dedup   -i contacts.json -o out.json                merge same-name contacts
+mc -i MBOX|PST|VCF|CSV -o DB.json [...]      import contacts into a JSON DB
+mc -i DB.json -o OUT.{csv,vcf} [filters]     export matching records
+mc -i DB.json -o OUT.json --dedup            merge same-name contacts
 ```
 
 ## Examples
 
 Build the contacts DB from a Gmail Takeout mbox:
 
-    mc import -i "All mail Including Spam and Trash.mbox" -o data/contacts.json
+    mc -i "All mail Including Spam and Trash.mbox" -o data/contacts.json
 
 Import an Outlook PST instead:
 
-    mc import -i archive.pst -o data/contacts.json
+    mc -i archive.pst -o data/contacts.json
 
-Import a vCard export (Google Contacts / Gmail), merging into the DB:
+Import a vCard export (Google Contacts / Gmail):
 
-    mc import -i contacts.vcf -o data/contacts.json
+    mc -i contacts.vcf -o data/contacts.json
 
-Import an Outlook / Google Contacts CSV export:
+Import an Outlook / Google Contacts CSV export (`--iformat outlook`):
 
-    mc import --outlook -i contacts.csv -o data/contacts.json
+    mc -i contacts.csv --iformat outlook -o data/contacts.json
+
+Merge a new import into an existing DB, preserving manual edits:
+
+    mc -i archive.pst -o data/contacts.json --merge
 
 Exclude whole domains while importing:
 
-    mc import -i archive.pst -o data/contacts.json --blacklist blacklist.txt
-
-Overwrite the DB instead of merging (discards manual edits):
-
-    mc import -f -i archive.pst -o data/contacts.json
+    mc -i archive.pst -o data/contacts.json --blacklist blacklist.txt
 
 Dump a per-email JSONL corpus for an LLM (no contacts DB):
 
-    mc import --llm -i mailbox.mbox -o emails.jsonl
+    mc -i mailbox.mbox -o emails.jsonl --llm
 
 Export filtered contacts to a vCard:
 
-    mc export -i data/contacts.json --type customer,investor -o leads.vcf
+    mc -i data/contacts.json --type customer,investor -o leads.vcf
 
 Export filtered contacts to CSV:
 
-    mc export -i data/contacts.json --company Intel,AMD --min-emails 5 -o intel_amd.csv
+    mc -i data/contacts.json --company Intel,AMD --min-emails 5 -o intel_amd.csv
 
-Export in Outlook's CSV column layout:
+Export in Outlook's CSV column layout (`--oformat outlook`):
 
-    mc export --outlook -i data/contacts.json -o outlook.csv
+    mc -i data/contacts.json -o outlook.csv --oformat outlook
 
 Deduplicate contacts sharing a first+last name, rewriting in place:
 
-    mc dedup -i data/contacts.json -o data/contacts.json
+    mc -i data/contacts.json -o data/contacts.json --dedup
+
+Merge one database into another (folding `extra.json` into `data/contacts.json`):
+
+    mc -i extra.json -o data/contacts.json --merge
 
 ## Building the contacts database
 
-`mc import` reads a Gmail Takeout `.mbox`, an Outlook `.pst`, or a vCard
-`.vcf`/`.vcd` (chosen by the `-i` file extension) into `contacts.json`. From a
-mailbox, contacts are the people you have corresponded with (sent to or heard
-from), with automated/bulk senders, spam, and nameless entries filtered out,
-identities merged by display name, and company derived from the email domain.
+An mbox/PST/vCard/Outlook-CSV input is treated as an **import**, building
+contacts into the output database. A Gmail Takeout `.mbox`, an Outlook `.pst`,
+and a vCard `.vcf`/`.vcd` are recognized by the `-i` extension. From a mailbox,
+contacts are the people you have corresponded with (sent to or heard from), with
+automated/bulk senders, spam, and nameless entries filtered out, identities
+merged by display name, and company derived from the email domain.
 
 ```bash
-mc import -i "/path/to/Takeout/Mail/All mail Including Spam and Trash.mbox" -o data/contacts.json
-mc import -i "/path/to/archive.pst" -o data/contacts.json    # Outlook PST
-mc import -i "/path/to/contacts.vcf" -o data/contacts.json   # vCard (e.g. a Gmail export)
+mc -i "/path/to/Takeout/Mail/All mail Including Spam and Trash.mbox" -o data/contacts.json
+mc -i "/path/to/archive.pst" -o data/contacts.json    # Outlook PST
+mc -i "/path/to/contacts.vcf" -o data/contacts.json   # vCard (e.g. a Gmail export)
 ```
 
 `-i` and `-o` are required. The output format follows the `-o` extension:
-`.json` is the native database and `.csv` exports CSV. See `mc import -h` for
-all options.
+`.json` is the native database, `.csv` writes the full-column CSV, and `.vcf`
+writes a vCard. To import an **Outlook-format CSV** (the column layout Outlook
+and Google Contacts export) pass `--iformat outlook`, since a bare `.csv` is
+read as the native CSV layout:
 
-Add `--outlook` to import an **Outlook-format CSV** (the column layout Outlook
-and Google Contacts export): `mc import --outlook -i contacts.csv -o data/contacts.json`. It
-reads First/Last Name, Job Title, Company, the E-mail Address columns, Business
-Phone, and the business address columns; `type`/`friend` and email counts are
-left blank/0.
+    mc -i contacts.csv --iformat outlook -o data/contacts.json
+
+The Outlook reader takes First/Last Name, Job Title, Company, the E-mail Address
+columns, Business Phone, and the business address columns; `type`/`friend` and
+email counts are left blank/0. See `mc -h` for all options.
 
 Importing a **vCard** adds its contacts directly (no message filtering): it maps
 N/FN, ORG, TITLE, TEL, ADR, every EMAIL, and `CATEGORIES` (a category matching a
-legal `type` value sets the type; a `friend` category sets the friend flag).This
-merges into the database like any other import, so you can fold a vCard export
-into an mbox-built database.
+legal `type` value sets the type; a `friend` category sets the friend flag). With
+`--merge` this folds into an existing database like any other import, so you can
+combine a vCard export with an mbox-built database.
 
 ### What gets imported
 
@@ -165,33 +177,36 @@ recruiting-spam.com
 
 ### Merge vs overwrite
 
-If the output file already exists, the importer **merges** into it (in whichever
-format the output path uses). For an existing contact, the counts (`num_emails`,
-`num_sent`, `num_received`) are overwritten with the latest import, the email
-list is unioned, and the interaction date range widens; hand-edited fields
-(the blank annotation columns `type`/`friend`/`title`/`address`, plus
-name/company) are preserved. Contacts present only in the old file are left
-untouched. This lets you re-run as a mailbox grows, or accumulate multiple
-mailboxes, without losing manual annotations.
+By default an import **overwrites** the output file. Pass `--merge` to fold the
+import into an existing database instead (in whichever format the output path
+uses). For an existing contact, the counts (`num_emails`, `num_sent`,
+`num_received`) are overwritten with the latest import, the email list is
+unioned, and the interaction date range widens; hand-edited fields (the blank
+annotation columns `type`/`friend`/`title`/`address`, plus name/company) are
+preserved. Contacts present only in the old file are left untouched. This lets
+you re-run as a mailbox grows, or accumulate multiple mailboxes, without losing
+manual annotations:
+
+```bash
+mc -i archive.pst -o data/contacts.json --merge   # fold into the existing DB
+```
 
 Imported rows include blank columns for you to fill in by hand: `type` (one of
 `customer`, `competitor`, `investor`, `reporter`, `partner`, `vendor`, `other`),
-`friend`, `title`, and `address`.
-
-Use `-f` / `--force` to ignore the existing file and write a fresh one instead
-(this discards any manual edits such as `type`).
+`friend`, `title`, and `address`. `--merge` also folds one JSON database into
+another (`mc -i extra.json -o data/contacts.json --merge`).
 
 ### Dump for an LLM
 
-`mc import --llm` skips the contacts database and instead writes a per-email
-**JSONL** corpus (one JSON object per line) for feeding to an LLM. Each record is
+`--llm` skips the contacts database and instead writes a per-email **JSONL**
+corpus (one JSON object per line) for feeding to an LLM. Each record is
 `{subject, from, to, date, body}` with the full body, HTML stripped to text.
 Every message is included except obvious `no-reply` senders, and it works on both
 mbox and PST.
 
 ```bash
-mc import --llm -i mailbox.mbox -o emails.jsonl
-mc import --llm -i archive.pst  -o emails.jsonl    # works on PST too
+mc -i mailbox.mbox -o emails.jsonl --llm
+mc -i archive.pst  -o emails.jsonl --llm    # works on PST too
 ```
 
 The JSONL is streamed as messages are read, so it scales to very large mailboxes
@@ -199,13 +214,14 @@ without holding everything in memory.
 
 ## Exporting contacts
 
-`mc export` selects a subset of contacts by per-column criteria and writes the
-**whole record** for each match. The output format follows the `-o` extension
-(required):
+Giving a **JSON database** as `-i` with a `.csv`/`.vcf` output runs an
+**export**: it selects a subset of contacts by per-column criteria and writes
+the **whole record** for each match. The output format follows the `-o`
+extension:
 
-- **`.csv`** -- all database columns. Add `--outlook` to instead write Outlook's
-  CSV column layout (`First Name`, `E-mail Address`, `Business Phone`, ...) that
-  Outlook and Google Contacts import directly.
+- **`.csv`** -- all database columns. Pass `--oformat outlook` to instead write
+  Outlook's CSV column layout (`First Name`, `E-mail Address`, `Business Phone`,
+  ...) that Outlook and Google Contacts import directly.
 - **`.vcf`** -- a Gmail-compatible **vCard 3.0** file (importable into Google
   Contacts and Outlook), CRLF-delimited and line-folded to 75 octets.
 
@@ -216,14 +232,14 @@ and date filters are inclusive ranges; all filters combine with AND. Note that
 
 ```bash
 # Customers and investors (the `type` column you filled in) -> vCard:
-mc export -i data/contacts.json --type customer,investor -o leads.vcf
+mc -i data/contacts.json --type customer,investor -o leads.vcf
 
 # Everyone at Intel or AMD with at least 5 emails, active since 2024 -> CSV:
-mc export -i data/contacts.json \
+mc -i data/contacts.json \
   --company Intel,AMD --min-emails 5 --last-after 2024-01-01 -o intel_amd.csv
 
 # All intel.com contacts since 2025 -> vCard:
-mc export -i data/contacts.json \
+mc -i data/contacts.json \
   --email-domain intel.com --last-after 2025-01-01 -o intel.vcf
 ```
 
@@ -232,19 +248,20 @@ The vCard maps name/emails (primary marked `PREF`), `company`->ORG,
 CATEGORIES, plus a NOTE with the email counts and last-contact date.
 
 `--type` accepts only the legal values (`customer`, `competitor`, `investor`,
-`reporter`, `partner`, `vendor`, `other`). See `mc export -h` for the full set of
+`reporter`, `partner`, `vendor`, `other`). See `mc -h` for the full set of
 filters (`--type`, `--first-name`, `--last-name`, `--min/max-emails`,
 `--min/max-sent`, `--min/max-received`, `--first-after/before`,
 `--last-after/before`).
 
 ## Deduplicating contacts
 
-`mc dedup` merges rows that share the same first **and** last name
-(case-insensitive), which can accumulate from multiple imports or manual edits.
+A JSON-to-JSON run with `--dedup` merges rows that share the same first **and**
+last name (case-insensitive), which can accumulate from multiple imports or
+manual edits.
 
 ```bash
-mc dedup -i data/contacts.json -o data/contacts.json   # in place
-mc dedup -i data/contacts.json -o deduped.csv           # or to a new file
+mc -i data/contacts.json -o data/contacts.json --dedup   # in place
+mc -i data/contacts.json -o deduped.json --dedup          # or to a new file
 ```
 
 When duplicates are merged:
@@ -257,7 +274,7 @@ When duplicates are merged:
 - the `primary_email` and name casing come from the highest-volume duplicate.
 
 Rows missing a first or last name are left untouched. `-o` may equal `-i` to
-rewrite in place, and the output format follows the `-o` extension (JSON/CSV).
-Because matching is by name only, two different people with the same name will
-be merged -- the joined `company` and multiple `emails` make such cases easy to
-spot for manual review.
+rewrite in place. Dedup is a JSON-to-JSON operation; to deduplicate before an
+export, dedup to `.json` first and then export. Because matching is by name
+only, two different people with the same name will be merged -- the joined
+`company` and multiple `emails` make such cases easy to spot for manual review.

@@ -8,7 +8,7 @@ from collections import defaultdict
 
 from mailcompiler.mailcompiler import (
     clean, company_from, is_bot, split_name, is_blacklisted, merge_row,
-    person_to_row, load_rows, write_rows,
+    person_to_row, load_rows, write_contacts_as,
     Rec, _ingest_message, _pst_message_fields, _MAPI_SENDER_SMTP,
     _signature_text, _extract_phones,
     _format_addrs, _is_noreply, dump_llm,
@@ -194,8 +194,9 @@ class TestRoundTrip:
     def _roundtrip(self, ext):
         fd, path = tempfile.mkstemp(suffix=ext)
         os.close(fd)
+        fmt = "json" if ext == ".json" else "csv"
         try:
-            write_rows(path, self.ROWS)
+            write_contacts_as(path, self.ROWS, fmt)
             back = load_rows(path)
         finally:
             os.remove(path)
