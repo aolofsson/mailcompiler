@@ -384,6 +384,63 @@ def write_rows(path, rows):
         write_json_rows(path, rows)
 
 
+# ---- Outlook CSV layout -----------------------------------------------------
+# Microsoft Outlook's CSV import/export header names (the subset we map).
+OUTLOOK_FIELDS = ["First Name", "Last Name", "Job Title", "Company",
+                  "E-mail Address", "E-mail 2 Address", "E-mail 3 Address",
+                  "Business Phone", "Business Street"]
+
+
+def write_outlook_csv(path, rows):
+    """Write contacts in Outlook's CSV column layout (importable by Outlook and
+    Google Contacts). Only the first three emails are kept (Outlook's limit)."""
+    def _w(out):
+        w = csv.writer(out)
+        w.writerow(OUTLOOK_FIELDS)
+        for r in rows:
+            emails = r.get("emails") or []
+            primary = r.get("primary_email") or ""
+            ordered = ([primary] if primary else [])
+            ordered += [e for e in emails if e and e != primary]
+            e1, e2, e3 = (ordered + ["", "", ""])[:3]
+            w.writerow([r.get("first_name", ""), r.get("last_name", ""),
+                        r.get("title", ""), r.get("company", ""),
+                        e1, e2, e3, r.get("phone", ""), r.get("address", "")])
+    _write_atomic(path, _w)
+
+
+def parse_outlook_csv(path):
+    """Parse an Outlook-format CSV into contact row dicts."""
+    source = os.path.basename(path)
+    rows = []
+    with open(path, "r", encoding="utf-8-sig", newline="") as fh:
+        for raw in csv.DictReader(fh):
+            r = {(k or "").strip().lower(): (v or "").strip()
+                 for k, v in raw.items()}
+            emails = [r.get(h, "") for h in
+                      ("e-mail address", "e-mail 2 address", "e-mail 3 address")]
+            emails = [e for e in emails if e]
+            addr = ", ".join(p for p in (
+                r.get("business street", ""), r.get("business city", ""),
+                r.get("business state", ""), r.get("business postal code", ""),
+                r.get("business country", "")) if p)
+            phone = r.get("business phone", "") or r.get("mobile phone", "")
+            row = _normalize_row({
+                "first_name": r.get("first name", ""),
+                "last_name": r.get("last name", ""),
+                "title": r.get("job title", ""),
+                "company": r.get("company", ""),
+                "phone": phone,
+                "address": addr,
+                "primary_email": emails[0] if emails else "",
+                "emails": emails,
+                "source": source,
+            })
+            if row["primary_email"] or row["first_name"] or row["last_name"]:
+                rows.append(row)
+    return rows
+
+
 # ---- query / list helpers ---------------------------------------------------
 def _csv_set(value):
     """Parse a comma-separated CLI value into a lowercased set, or None."""
@@ -1217,13 +1274,23 @@ def cmd_import(args):
 
     # --llm: dump a per-email JSONL corpus (full bodies) and skip the contacts DB.
     if args.llm:
-        if vcard:
-            sys.exit("error: --llm requires an mbox or PST, not a vCard")
+        if vcard or args.outlook:
+            sys.exit("error: --llm requires an mbox or PST input")
         src = (iter_pst_messages(path, body_cap=None) if pst
                else iter_mbox_messages(path, body_cap=None))
         out_path = _resolve_llm_out(args.out)
         n = dump_llm(src, out_path)
         sys.stderr.write(f"Wrote {n:,} email records to {out_path}\n")
+        return
+
+    # --outlook: read an Outlook-format CSV straight into contact rows.
+    if args.outlook:
+        if not path.lower().endswith(".csv"):
+            sys.exit("error: --outlook expects a .csv input file")
+        new_rows = parse_outlook_csv(path)
+        sys.stderr.write(
+            f"Parsed {len(new_rows):,} contacts from {os.path.basename(path)}.\n")
+        _merge_and_write(args, new_rows)
         return
 
     # vCard input: contacts come straight from the cards (no message pipeline).
@@ -1355,6 +1422,8 @@ def cmd_export(args):
     ext = os.path.splitext(out)[1].lower()
     if ext not in (".csv", ".vcf"):
         sys.exit("error: -o must end in .csv or .vcf")
+    if args.outlook and ext != ".csv":
+        sys.exit("error: --outlook only applies to .csv output")
     if args.type:
         bad = [t for t in (_csv_set(args.type) or set()) if t not in TYPE_VALUES]
         if bad:
@@ -1369,6 +1438,8 @@ def cmd_export(args):
         os.makedirs(outdir, exist_ok=True)
     if ext == ".vcf":
         write_vcards(out, selected)
+    elif args.outlook:
+        write_outlook_csv(out, selected)
     else:
         write_csv_rows(out, selected)
     sys.stderr.write(
@@ -1415,6 +1486,8 @@ def parse_args(argv=None):
     sc.add_argument("--llm", action="store_true",
                     help="instead of the contacts DB, write a per-email JSONL "
                          "corpus (subject/from/to/date/body) for LLM use")
+    sc.add_argument("--outlook", action="store_true",
+                    help="treat a .csv input as Outlook's CSV column layout")
     sc.set_defaults(func=cmd_import)
 
     # mc export -i CONTACTS -o OUT.{csv,vcf} [filters...]
@@ -1424,6 +1497,8 @@ def parse_args(argv=None):
                     help="path to the contacts JSON or CSV from 'mc import'")
     ex.add_argument("-o", "--output", dest="output", required=True,
                     help="output file; .csv (all columns) or .vcf (vCard 3.0)")
+    ex.add_argument("--outlook", action="store_true",
+                    help="write .csv in Outlook's CSV column layout")
     ex.add_argument("--type", dest="type",
                     help="match contact type against any of LIST (%s)"
                          % "/".join(TYPE_VALUES))

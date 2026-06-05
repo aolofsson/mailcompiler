@@ -1,8 +1,33 @@
 # MailCompiler
 
-Build and query a personal contacts database from a Gmail Takeout mailbox.
-`mc import` turns an `.mbox` into a `contacts.json` database; `mc export` writes
-a filtered subset to CSV or a Gmail-compatible vCard.
+MailCompiler turns a mailbox into a clean, queryable contacts database. It scans
+your email archive (Gmail Takeout `.mbox` or Outlook `.pst`), works out who you
+actually correspond with, merges each person's addresses and signature details
+into one record, and lets you annotate, query, and export those contacts to CSV
+or vCard for Google Contacts and Outlook.
+
+## Key features
+
+- **Scans large mailboxes** -- streams a Gmail Takeout `.mbox` (handles 20 GB+)
+  or an Outlook `.pst`, selected automatically by file extension.
+- **Finds real contacts** -- keeps people you exchanged mail with; drops spam,
+  automated/bulk senders (no-reply, mailing lists, bulk ESPs) and nameless
+  entries; merges a person's multiple addresses into one record.
+- **Enriches records** -- derives company from the email domain and pulls a
+  phone number from the sender's signature (validated/normalized to E.164).
+- **Manual annotations preserved** -- blank `type` (customer/competitor/
+  investor/reporter/partner/vendor/other), `friend`, `title`, and `address`
+  columns you fill in survive re-imports.
+- **Incremental & non-destructive** -- re-running merges into the existing
+  database without clobbering manual edits; `mc dedup` collapses same-name
+  duplicates.
+- **Imports contacts, not just mail** -- reads vCard (`.vcf`/`.vcd`) and
+  Outlook-format CSV (`--outlook`) directly into the database.
+- **Flexible export** -- filter by company, type, email volume, dates, name, or
+  domain and write a CSV, a Gmail-compatible vCard 3.0, or an Outlook CSV.
+- **LLM corpus** -- `mc import --llm` dumps the mailbox as per-email JSONL
+  (subject/from/to/date/body) for feeding to a model.
+- **Portable storage** -- native JSON database with a lossless CSV equivalent.
 
 ## Install (development)
 
@@ -14,14 +39,15 @@ pip install -e ".[dev]"          # provides the `mc` command
 `mc` has one subcommand per operation, all with a uniform `-i/--input`:
 
 ```
-mc import  -i MBOX|PST -o OUT [...]           build/merge the contacts DB
+mc import  -i MBOX|PST|VCF|CSV -o OUT [...]   build/merge the contacts DB
 mc export  -i CONTACTS -o OUT.{csv,vcf}       export matching records
 mc dedup   -i CONTACTS -o OUT                 merge same-name contacts
 ```
 
-Import reads a Gmail Takeout `.mbox` or an Outlook `.pst` (chosen by extension).
-The database is JSON (the native format); pass `-o something.csv` to export CSV
-instead. `mc import --llm` instead writes a per-email JSONL corpus for LLMs.
+Import reads a Gmail Takeout `.mbox`, an Outlook `.pst`, a vCard `.vcf`/`.vcd`,
+or (with `--outlook`) an Outlook CSV -- chosen by file extension. The database is
+JSON (the native format); pass `-o something.csv` for a lossless CSV copy.
+`mc import --llm` instead writes a per-email JSONL corpus for LLMs.
 
 Without installing, run it as a module: `python -m mailcompiler.mailcompiler <command> ...`.
 
@@ -45,6 +71,12 @@ legal `type` value sets the type; a `friend` category sets the friend flag).
 Email counts default to 0 and a contact with no email address is skipped. This
 merges into the database like any other import, so you can fold a vCard export
 into an mbox-built database.
+
+Add `--outlook` to import an **Outlook-format CSV** (the column layout Outlook
+and Google Contacts export): `mc import --outlook -i contacts.csv -o data`. It
+reads First/Last Name, Job Title, Company, the E-mail Address columns, Business
+Phone, and the business address columns; `type`/`friend` and email counts are
+left blank/0.
 
 `-i` and `-o` are required. The output format follows the `-o` extension:
 `.json` is the native database, `.csv` exports CSV; a directory (as above)
@@ -138,7 +170,9 @@ without holding everything in memory.
 **whole record** for each match. The output format follows the `-o` extension
 (required):
 
-- **`.csv`** -- all database columns.
+- **`.csv`** -- all database columns. Add `--outlook` to instead write Outlook's
+  CSV column layout (`First Name`, `E-mail Address`, `Business Phone`, ...) that
+  Outlook and Google Contacts import directly.
 - **`.vcf`** -- a Gmail-compatible **vCard 3.0** file (importable into Google
   Contacts and Outlook), CRLF-delimited and line-folded to 75 octets.
 

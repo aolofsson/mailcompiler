@@ -1,5 +1,6 @@
 """Unit tests for the mbox contact import helpers."""
 
+import csv
 import json
 import os
 import tempfile
@@ -14,6 +15,7 @@ from mailcompiler.mailcompiler import (
     _join_distinct, _merge_group, dedup_contacts,
     _vcard_escape, _vcard_fold, _contact_vcard, write_vcards,
     _vcard_unescape, parse_vcards,
+    OUTLOOK_FIELDS, write_outlook_csv, parse_outlook_csv,
 )
 
 
@@ -598,3 +600,65 @@ class TestVcardImport:
         assert b["company"] == "Acme" and b["title"] == "VP"
         assert b["phone"] == "+16175550000"
         assert b["type"] == "customer" and b["friend"] == "Y"
+
+
+OUTLOOK_VCF_CSV = (
+    "First Name,Last Name,Job Title,Company,E-mail Address,E-mail 2 Address,"
+    "Business Phone,Business Street,Business City,Business State\r\n"
+    "Alex,Smith,Account Executive,Acme Corp,alex@acme.com,alex2@acme.com,"
+    "+1-555-0199,123 Business Rd,Boston,MA\r\n")
+
+
+class TestOutlookCsv:
+    def test_write_outlook_csv(self):
+        rows = [_row("Jane", "Roe", "Acme", "+16175550000", "customer",
+                     "jane@acme.com", ["jane@acme.com", "jane@gmail.com"],
+                     title="VP", address="1 Main St")]
+        path = _write_tmp("", ".csv")
+        try:
+            write_outlook_csv(path, rows)
+            with open(path, newline="") as fh:
+                rd = list(csv.reader(fh))
+        finally:
+            os.remove(path)
+        assert rd[0] == OUTLOOK_FIELDS
+        rec = dict(zip(rd[0], rd[1]))
+        assert rec["First Name"] == "Jane" and rec["Last Name"] == "Roe"
+        assert rec["Job Title"] == "VP" and rec["Company"] == "Acme"
+        assert rec["E-mail Address"] == "jane@acme.com"
+        assert rec["E-mail 2 Address"] == "jane@gmail.com"
+        assert rec["Business Phone"] == "+16175550000"
+        assert rec["Business Street"] == "1 Main St"
+
+    def test_parse_outlook_csv(self):
+        path = _write_tmp(OUTLOOK_VCF_CSV, ".csv")
+        try:
+            rows = parse_outlook_csv(path)
+        finally:
+            os.remove(path)
+        assert len(rows) == 1
+        r = rows[0]
+        assert (r["first_name"], r["last_name"]) == ("Alex", "Smith")
+        assert r["title"] == "Account Executive" and r["company"] == "Acme Corp"
+        assert r["phone"] == "+1-555-0199"
+        assert r["emails"] == ["alex@acme.com", "alex2@acme.com"]
+        assert r["address"] == "123 Business Rd, Boston, MA"
+        assert r["type"] == "" and r["friend"] == "" and r["num_emails"] == 0
+
+    def test_roundtrip(self):
+        rows = [_row("Jane", "Roe", "Acme", "+16175550000", "customer",
+                     "jane@acme.com", ["jane@acme.com", "jane@gmail.com"],
+                     title="VP", address="1 Main St")]
+        path = _write_tmp("", ".csv")
+        try:
+            write_outlook_csv(path, rows)
+            back = parse_outlook_csv(path)
+        finally:
+            os.remove(path)
+        b = back[0]
+        assert (b["first_name"], b["last_name"]) == ("Jane", "Roe")
+        assert b["company"] == "Acme" and b["title"] == "VP"
+        assert b["phone"] == "+16175550000"
+        assert b["emails"] == ["jane@acme.com", "jane@gmail.com"]
+        assert b["address"] == "1 Main St"
+        assert b["type"] == "" and b["num_emails"] == 0   # not carried by Outlook
