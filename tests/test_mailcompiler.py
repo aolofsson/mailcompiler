@@ -1,8 +1,11 @@
 """Unit tests for the mbox contact import helpers."""
 
+import os
+import tempfile
+
 from mailcompiler.mailcompiler import (
     clean, company_from, is_bot, split_name, is_blacklisted, merge_row,
-    person_to_row,
+    person_to_row, load_rows, write_rows,
 )
 
 
@@ -150,3 +153,39 @@ class TestPersonToRow:
         row = person_to_row(p, "All mail.mbox")
         assert row["source"] == "All mail.mbox"
         assert row["vip"] == ""
+
+
+class TestRoundTrip:
+    ROWS = [{
+        "vip": "Y", "last_name": "Vale", "first_name": "Jordan",
+        "company": "Globex", "primary_email": "jordan@globex.com",
+        "emails": ["jordan@globex.com", "jordan.vale@globex.com"],
+        "num_emails": 3, "num_sent": 2, "num_received": 1,
+        "first_interaction": "2023-01-01", "last_interaction": "2024-05-05",
+        "source": "a.mbox | b.mbox",
+    }]
+
+    def _roundtrip(self, ext):
+        fd, path = tempfile.mkstemp(suffix=ext)
+        os.close(fd)
+        try:
+            write_rows(path, self.ROWS)
+            back = load_rows(path)
+        finally:
+            os.remove(path)
+        return back
+
+    def test_json_roundtrip(self):
+        back = self._roundtrip(".json")
+        assert back == [
+            {k: self.ROWS[0][k] for k in self.ROWS[0]}
+        ]
+
+    def test_csv_roundtrip(self):
+        back = self._roundtrip(".csv")
+        r = back[0]
+        # CSV preserves the same values (emails re-split, ints re-parsed)
+        assert r["emails"] == ["jordan@globex.com", "jordan.vale@globex.com"]
+        assert r["num_sent"] == 2 and r["num_received"] == 1
+        assert r["vip"] == "Y" and r["source"] == "a.mbox | b.mbox"
+        assert r["last_interaction"] == "2024-05-05"
