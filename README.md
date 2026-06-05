@@ -1,4 +1,4 @@
-# MailCompiler
+![MailCompiler](docs/postverket.svg)
 
 MailCompiler is a utility for reclaiming control over emails and contacts via
 automatic imports from .mbox and .pst exports into a human readableJ JSON
