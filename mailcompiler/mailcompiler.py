@@ -6,12 +6,12 @@ formats (taken from the file extension, or forced with --iformat/--oformat):
   mc -i MBOX|PST|VCF -o DB.json [...]      import/merge into the contacts DB
   mc -i CSV --iformat outlook -o DB.json   import an Outlook/Google CSV
   mc -i DB.json -o OUT.{csv,vcf} [...]     export matching records
-  mc -i DB.json -o OUT.json --dedup        merge same-name contacts
+  mc -i DB.json -o OUT.json --reconcile    clean + merge duplicate records
   mc -i MBOX|PST -o OUT.jsonl --llm        dump a per-email JSONL corpus
 
 JSON is the native database format. CSV and vCard are interchange formats:
 a CSV/vCard is an import source or an export target, never a database to
-operate on (so dedup/export read JSON). Outlook's CSV column layout is
+operate on (so reconcile/export read JSON). Outlook's CSV column layout is
 selected with --iformat/--oformat outlook.
 
 mbox import streams the file (only header blocks are parsed, bodies skipped),
@@ -1593,8 +1593,8 @@ def _merge_by_shared_email(rows):
 
 
 def _merge_by_name(rows):
-    """Merge records sharing a lowercased (first, last) name (the --dedup pass,
-    using reconcile's single-winner merge)."""
+    """Merge records sharing a lowercased (first, last) name (the name-merge
+    pass, using reconcile's single-winner merge)."""
     groups, order, passthrough = {}, [], []
     for r in rows:
         first = (r.get("first_name") or "").strip().lower()
@@ -2100,8 +2100,8 @@ def cmd_export(args, ofmt):
 def cmd_db(args, ofmt):
     """Fold a native contacts DB (json/csv/xlsx) into the existing output DB,
     never wiping it (--force overwrites overlapping fields), optionally filtering
-    the input by domain and/or --dedup-ing the result. A missing output file is
-    created fresh. When input and output are the same file, this normalizes it."""
+    the input by domain and/or --reconcile-ing the result. A missing output file
+    is created fresh. When input and output are the same file, this normalizes it."""
     whitelist, blacklist = load_domain_filters(args)
     rows = load_rows(args.input)
     if not rows:
@@ -2126,16 +2126,13 @@ def cmd_db(args, ofmt):
     if args.reconcile:
         rows = reconcile_contacts(rows)
         extra = " then reconciled"
-    elif args.dedup:
-        rows = dedup_contacts(rows)
-        extra = " then deduped"
     else:
         extra = ""
     rows = sorted(rows, key=_contact_sort_key)
     write_contacts_as(out_path, rows, ofmt)
 
     note = (f" ({n_folded - len(rows):,} merged/dropped)"
-            if (args.reconcile or args.dedup) else "")
+            if args.reconcile else "")
     sys.stderr.write(
         f"\nWrote {out_path}{extra}\n"
         f"  {n_existing:,} existing + {n_new:,} new from "
@@ -2172,7 +2169,7 @@ def parse_args(argv=None):
                     "operation is inferred from the -i/-o formats: a mailbox, "
                     "vCard, Outlook CSV, or LinkedIn export imports into a "
                     "contacts DB; a JSON input exports (-o .csv/.vcf) or "
-                    "deduplicates (-o .json --dedup). Imports and DB writes "
+                    "reconciles (-o .json --reconcile). Imports and DB writes "
                     "always fold into the existing -o (never wiping it); pass "
                     "--force to overwrite overlapping fields.")
     p.add_argument("-i", "--input", dest="input", required=True,
@@ -2188,13 +2185,10 @@ def parse_args(argv=None):
     p.add_argument("--oformat", choices=FORMATS,
                    help="force the output format instead of inferring it from "
                         "the extension; 'outlook' writes Outlook's CSV layout")
-    p.add_argument("--dedup", action="store_true",
-                   help="merge contacts sharing a first+last name (json -> json)")
     p.add_argument("--reconcile", action="store_true",
                    help="clean and merge records (json -> json): drop junk/role "
                         "addresses, merge duplicates by email and by name, "
-                        "recompute fields, and pick the best primary email. "
-                        "A superset of --dedup.")
+                        "recompute fields, and pick the best primary email")
     p.add_argument("--force", action="store_true",
                    help="when an imported record overlaps an existing one, "
                         "overwrite the existing text fields (company, title, "
@@ -2271,8 +2265,8 @@ def main(argv=None):
             sys.exit("error: --llm requires an mbox or PST input")
         if ofmt != "jsonl":
             sys.exit("error: --llm writes a .jsonl corpus, so -o must be .jsonl")
-        if args.dedup or args.reconcile:
-            sys.exit("error: --llm cannot be combined with --dedup/--reconcile")
+        if args.reconcile:
+            sys.exit("error: --llm cannot be combined with --reconcile")
         return cmd_dump_llm(args, ifmt)
 
     # Import: a mailbox / vCard / Outlook CSV / LinkedIn export builds contacts,
@@ -2283,18 +2277,18 @@ def main(argv=None):
         if ofmt not in DB_FORMATS and ifmt == "linkedin":
             sys.exit("error: a LinkedIn import writes a contacts database; "
                      "-o must be .json/.csv/.xlsx (not %s)" % ofmt)
-        if args.dedup or args.reconcile:
-            sys.exit("error: --dedup/--reconcile apply to a json -> json "
-                     "database, not an import; import to .json first, then run it")
+        if args.reconcile:
+            sys.exit("error: --reconcile applies to a json -> json database, not "
+                     "an import; import to .json first, then reconcile")
         return cmd_import(args, ifmt, ofmt)
 
     # Native contacts DB input (json/csv/xlsx -- interchangeable layouts).
     if ifmt in DB_FORMATS:
         if ofmt == "jsonl":
             sys.exit("error: a .jsonl corpus is produced only with --llm")
-        if args.dedup or args.reconcile:
+        if args.reconcile:
             if ofmt not in DB_FORMATS:
-                sys.exit("error: --dedup/--reconcile produce a native database; "
+                sys.exit("error: --reconcile produces a native database; "
                          "-o must be .json/.csv/.xlsx (not %s)" % ofmt)
             return cmd_db(args, ofmt)
         # DB -> .json folds into the existing DB (never wipes it); DB -> other
