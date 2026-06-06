@@ -32,9 +32,6 @@ There's one command, `mc`, and one lossless read/write JSON database.
 pip install -e .                           # install the `mc` command
 export MC_DB=~/contacts.json               # set database location
 mc -i takeout.mbox                         # import mbox contacts
-mc -i archive.pst                          # import pst archive contacts
-mc -i all.vcf                              # merge in vcard
-mc -i outlook.csv --iformat outlook        # merge in outlook csv
 mc -i connections.csv --iformat linkedin   # merge in linkedin connections
 mc --reconcile                             # clean + merge duplicates
 mc -o profit.xlsx                          # export to excel
