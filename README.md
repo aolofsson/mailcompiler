@@ -32,26 +32,23 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-## MC Program
-
-The MailCompiler command line utility is called 'mc'
-
-```
-mc -h                                        print out command line help
-mc -i MBOX|PST|VCF|CSV -o DB.json [...]      import contacts into a JSON DB
-mc -i DB.json -o OUT.{csv,vcf} [filters]     export matching records
-mc -i DB.json -o OUT.json --dedup            merge same-name contacts
-```
-
 ## Examples
 
 Build the JSON contacts database from a Gmail Takeout mbox:
 
     mc -i "All mail Including Spam and Trash.mbox" -o data/contacts.json
 
+Direct extraction from Takeout mbox to an xlsx spreadsheet:
+
+    mc -i "All mail Including Spam and Trash.mbox" -o data/contacts.xlsx
+
 Import an Outlook PST instead:
 
     mc -i archive.pst -o data/contacts.json
+
+Convert a JSON contacts database to an excel spreadsheet
+
+    mc -i data/contacts.json -o contacts.xlsx
 
 Import a vCard export (Google Contacts / Gmail):
 
@@ -93,7 +90,68 @@ Merge one database into another (folding `extra.json` into `data/contacts.json`)
 
     mc -i extra.json -o data/contacts.json --merge
 
+## MC Help
 
+```
+usage: mc [-h] -i INPUT -o OUTPUT [--iformat {json,csv,outlook,vcard,mbox,pst,jsonl}]
+          [--oformat {json,csv,outlook,vcard,mbox,pst,jsonl}] [--dedup] [--merge] [--llm]
+          [--blacklist PATH] [--type TYPE] [--company COMPANY] [--first-name FIRST_NAME]
+          [--last-name LAST_NAME] [--email-domain EMAIL_DOMAIN] [--min-emails MIN_EMAILS]
+          [--max-emails MAX_EMAILS] [--min-sent MIN_SENT] [--max-sent MAX_SENT]
+          [--min-received MIN_RECEIVED] [--max-received MAX_RECEIVED]
+          [--last-after YYYY-MM-DD] [--last-before YYYY-MM-DD] [--first-after YYYY-MM-DD]
+          [--first-before YYYY-MM-DD]
+
+options:
+  -h, --help            show this help message and exit
+  -i INPUT, --input INPUT
+                        input path: a mailbox (.mbox/.pst), a vCard (.vcf/.vcd), an
+                        Outlook CSV (--iformat outlook), or a contacts .json
+  -o OUTPUT, --output OUTPUT
+                        output path: a .json contacts DB, a .csv/.vcf export, or a .jsonl
+                        corpus (with --llm)
+  --iformat {json,csv,outlook,vcard,mbox,pst,jsonl}
+                        force the input format instead of inferring it from the extension;
+                        'outlook' reads an Outlook/Google CSV
+  --oformat {json,csv,outlook,vcard,mbox,pst,jsonl}
+                        force the output format instead of inferring it from the
+                        extension; 'outlook' writes Outlook's CSV layout
+  --dedup               merge contacts sharing a first+last name (json -> json)
+  --merge               merge the import into an existing output DB (preserving manual
+                        edits) instead of overwriting it
+  --llm                 dump a per-email JSONL corpus (subject/from/to/date/body) from an
+                        mbox/PST instead of building the DB
+  --blacklist PATH      file of domains to exclude from contacts (one per line; '#'
+                        comments and blank lines ignored)
+  --type TYPE           match contact type against any of LIST
+                        (customer/competitor/investor/reporter/partner/vendor/other)
+  --company COMPANY     match company against any of LIST
+  --first-name FIRST_NAME
+                        match first name against any of LIST
+  --last-name LAST_NAME
+                        match last name against any of LIST
+  --email-domain EMAIL_DOMAIN
+                        match primary email domain against any of LIST
+  --min-emails MIN_EMAILS
+                        minimum num_emails
+  --max-emails MAX_EMAILS
+                        maximum num_emails
+  --min-sent MIN_SENT   minimum num_sent
+  --max-sent MAX_SENT   maximum num_sent
+  --min-received MIN_RECEIVED
+                        minimum num_received
+  --max-received MAX_RECEIVED
+                        maximum num_received
+  --last-after YYYY-MM-DD
+                        last_interaction on or after this date
+  --last-before YYYY-MM-DD
+                        last_interaction on or before this date
+  --first-after YYYY-MM-DD
+                        first_interaction on or after this date
+  --first-before YYYY-MM-DD
+                        first_interaction on or before this date
+
+```
 
 ## Database Record
 
