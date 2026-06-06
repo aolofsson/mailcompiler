@@ -26,35 +26,20 @@ vCard and CSV.
 
 ## TL;DR
 
-```bash
-pip install -e .                                   # install the `mc` command
-mc -i takeout.mbox -o contacts.json                  # create initial database
-mc -i archive.pst -o contacts.json                   # merge in pst archive
-mc -i all.vcf -o contacts.json                       # merge in vcard
-mc -i outlook.csv --iformat outlook -o contacts.json # merge in outlook csv
-mc -i l.csv --iformat linkedin -o contacts.json      # merge in linkedin export
-mc --reconcile -i contacts.json -o contacts.json     # clean + merge duplicates
-mc -i contacts.json -o contacts.xlsx                 # export to excel
-```
-
-There's one command, `mc`, and one JSON database. `mc` infers the operation from
-the `-i`/`-o` file extensions: a mailbox/vCard/CSV/XLSX/LinkedIn in **imports**;
-a JSON DB in **exports** (or `--reconcile`). Imports always fold into the existing
-`-o` (never wiping it; the first import creates it). The rest of this README is
-the details.
-
-### Set the database once with `$MC_DB`
-
-So you don't repeat `-o contacts.json` on every command, point `$MC_DB` at your
-database; a missing `-i` or `-o` then defaults to it (explicit flags still win):
+There's one command, `mc`, and one lossless read/write JSON database.
 
 ```bash
-export MC_DB=~/contacts.json     # in your shell rc
-mc -i takeout.mbox               # -o defaults to $MC_DB (created if absent)
-mc -i archive.pst                # fold another source in
-mc --reconcile                   # -i and -o both default to $MC_DB
-mc -o leads.xlsx                 # export: -i defaults to $MC_DB
+pip install -e .                           # install the `mc` command
+export MC_DB=~/contacts.json               # set database location
+mc -i takeout.mbox                         # import mbox contacts
+mc -i archive.pst                          # import pst archive contacts
+mc -i all.vcf                              # merge in vcard
+mc -i outlook.csv --iformat outlook        # merge in outlook csv
+mc -i connections.csv --iformat linkedin   # merge in linkedin connections
+mc --reconcile                             # clean + merge duplicates
+mc -o profit.xlsx                          # export to excel
 ```
+
 
 `mc` prints which path it resolved (e.g. `Using $MC_DB for -o/--output: ...`). If
 neither the flag nor `$MC_DB` is set, it errors.
@@ -67,38 +52,25 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-## Workflow
-
-1. Convert email archive (.mbox, .pst) into a JSON file
-  mc -i "All mail Including Spam and Trash.mbox" -o contacts.json
-2. Translate JSON file to an xlsx spreadsheet
-  mc -i contacts.json -o contacts.xlsx
-3. Edit/annotate/wrangle/fix contact spreadsheet
-4. Merge changes into golden contact database
-  mc -i contacts.xlsx -o contacts.json
-
 ## Examples
 
-Build the JSON contacts database from a Gmail Takeout mbox (this also brings in
-the other To/Cc recipients of mail you received -- people on a thread with you,
-not just senders; add `--no-cc` to skip them and keep only direct correspondents):
+Build the JSON contacts database from a Gmail Takeout mbox and stash in $MC_DB:
 
-    mc -i "All mail Including Spam and Trash.mbox" -o data/contacts.json
-    mc -i "All mail Including Spam and Trash.mbox" -o data/contacts.json --no-cc
+    mc -i "All mail Including Spam and Trash.mbox"
 
-Direct extraction from Takeout mbox to an xlsx spreadsheet:
+Direct extraction from Takeout mbox to an xlsx spreadsheet with explicit output location.
 
     mc -i "All mail Including Spam and Trash.mbox" -o data/contacts.xlsx
 
-Import an Outlook PST instead:
+Import an Outlook PST and stash in $MC_DB:
 
-    mc -i archive.pst -o data/contacts.json
+    mc -i archive.pst
 
-Convert a JSON contacts database to an excel spreadsheet
+Convert a JSON contacts in $MC_DB to an excel spreadsheet
 
-    mc -i data/contacts.json -o contacts.xlsx
+    mc -o contacts.xlsx
 
-Import a vCard export (Google Contacts / Gmail):
+Import a vCard export (Google Contacts / Gmail) and store in explicit location:
 
     mc -i contacts.vcf -o data/contacts.json
 
@@ -155,6 +127,21 @@ Clean and merge duplicate records, rewriting in place:
 Merge one database into another (folding `extra.json` into `data/contacts.json`):
 
     mc -i extra.json -o data/contacts.json
+
+
+### Set the database once with `$MC_DB`
+
+So you don't repeat `-o contacts.json` on every command, point `$MC_DB` at your
+database; a missing `-i` or `-o` then defaults to it (explicit flags still win):
+
+```bash
+export MC_DB=~/contacts.json     # in your shell rc
+mc -i takeout.mbox               # -o defaults to $MC_DB (created if absent)
+mc -i archive.pst                # fold another source in
+mc --reconcile                   # -i and -o both default to $MC_DB
+mc -o leads.xlsx                 # export: -i defaults to $MC_DB
+```
+
 
 ## MC Help
 
