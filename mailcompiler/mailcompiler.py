@@ -122,11 +122,13 @@ def is_bot(email_addr):
     return False
 
 
-def load_blacklist(path):
-    """Read a blacklist file into a set of domains (one entry per line).
+def load_domain_list(path):
+    """Read a domain list file (whitelist or blacklist) into a set of domains.
 
-    Blank lines and lines starting with '#' are ignored. Entries may be written
-    as "example.com" or "@example.com"; both mean "block this whole domain".
+    One entry per line. Blank lines and lines starting with '#' are ignored, so
+    the categorized list files with '# section' headers work unchanged. Entries
+    may be written as "example.com" or "@example.com"; both mean the whole
+    domain.
     """
     domains = set()
     with open(path, "r", encoding="utf-8") as fh:
@@ -138,12 +140,33 @@ def load_blacklist(path):
     return domains
 
 
+def _domain_matches(domain, domain_set):
+    """True if `domain` equals or is a subdomain of any entry in domain_set."""
+    return any(domain == d or domain.endswith("." + d) for d in domain_set)
+
+
 def is_blacklisted(email_addr, blacklist_domains):
     """True if the address's domain matches a blacklisted domain or subdomain."""
     if not blacklist_domains:
         return False
-    domain = email_addr.split("@")[-1].lower()
-    return any(domain == d or domain.endswith("." + d) for d in blacklist_domains)
+    return _domain_matches(email_addr.split("@")[-1].lower(), blacklist_domains)
+
+
+def contact_domains(contact):
+    """All email domains for a contact (primary_email plus every emails[] entry)."""
+    domains = set()
+    addrs = [contact.get("primary_email", "")] + list(contact.get("emails", []) or [])
+    for addr in addrs:
+        if addr and "@" in addr:
+            domains.add(addr.split("@")[-1].lower())
+    return domains
+
+
+def contact_in_domains(contact, domain_set):
+    """True if any of the contact's email domains matches the domain set."""
+    if not domain_set:
+        return False
+    return any(_domain_matches(d, domain_set) for d in contact_domains(contact))
 
 
 def clean(tok):
@@ -579,6 +602,46 @@ def matches(contact, crit):
             return False
 
     return True
+
+
+def load_domain_filters(args):
+    """Load --whitelist / --blacklist into domain sets (None when not given).
+
+    Exits with an error if a given file is missing or contains no domains.
+    """
+    def load(path, label):
+        if not os.path.isfile(path):
+            sys.exit("error: %s not found: %s" % (label, path))
+        domains = load_domain_list(path)
+        if not domains:
+            sys.exit("error: %s %s contains no domains" % (label, path))
+        return domains
+
+    whitelist = load(args.whitelist, "whitelist") if getattr(args, "whitelist", None) else None
+    blacklist = load(args.blacklist, "blacklist") if getattr(args, "blacklist", None) else None
+    return whitelist, blacklist
+
+
+def select_by_domains(contacts, whitelist, blacklist):
+    """Filter contacts by email domain: keep only whitelisted, drop blacklisted.
+
+    Matching is on any of a contact's email domains (primary_email plus every
+    emails[] entry), and matches subdomains too. Returns
+    (kept, n_dropped_not_whitelisted, n_dropped_blacklisted).
+    """
+    if whitelist is None and not blacklist:
+        return list(contacts), 0, 0
+    kept = []
+    n_wl = n_bl = 0
+    for c in contacts:
+        if whitelist is not None and not contact_in_domains(c, whitelist):
+            n_wl += 1
+            continue
+        if blacklist and contact_in_domains(c, blacklist):
+            n_bl += 1
+            continue
+        kept.append(c)
+    return kept, n_wl, n_bl
 
 
 # ---- body / phone extraction ------------------------------------------------
@@ -1438,7 +1501,7 @@ def cmd_import(args, ifmt, ofmt):
     if args.blacklist:
         if not os.path.isfile(args.blacklist):
             sys.exit("error: blacklist not found: %s" % args.blacklist)
-        blacklist = load_blacklist(args.blacklist)
+        blacklist = load_domain_list(args.blacklist)
 
     recs = defaultdict(Rec)  # primary email -> Rec
     n_msgs = 0
@@ -1556,9 +1619,15 @@ def cmd_export(args, ofmt):
         if bad:
             sys.exit("error: invalid --type value(s) %s; legal values: %s"
                      % (", ".join(sorted(bad)), ", ".join(TYPE_VALUES)))
+    whitelist, blacklist = load_domain_filters(args)
     contacts = load_rows(args.input)
     crit = build_criteria(args)
     selected = [c for c in contacts if matches(c, crit)]
+    selected, n_wl, n_bl = select_by_domains(selected, whitelist, blacklist)
+    if whitelist is not None or blacklist:
+        sys.stderr.write(
+            f"Domain filter: dropped {n_wl:,} not whitelisted, "
+            f"{n_bl:,} blacklisted.\n")
 
     out = _resolve_out(args.output, ofmt)
     outdir = os.path.dirname(out)
@@ -1573,9 +1642,15 @@ def cmd_db(args, ofmt):
     """Operate on a native contacts DB (json/csv/xlsx -> json/csv/xlsx): convert
     or copy through, and/or --merge the input into the existing output DB, and/or
     --dedup the result."""
+    whitelist, blacklist = load_domain_filters(args)
     rows = load_rows(args.input)
     if not rows:
         sys.exit("error: no contacts found in %s" % args.input)
+    rows, n_wl, n_bl = select_by_domains(rows, whitelist, blacklist)
+    if whitelist is not None or blacklist:
+        sys.stderr.write(
+            f"Domain filter: dropped {n_wl:,} not whitelisted, "
+            f"{n_bl:,} blacklisted.\n")
     out_path = _resolve_out(args.output, ofmt)
     outdir = os.path.dirname(out_path)
     if outdir:
@@ -1663,9 +1738,14 @@ def parse_args(argv=None):
                    metavar="BYTES",
                    help="--llm: cap each message body to BYTES (default 262144; "
                         "0 = unlimited) so attachment blobs do not dominate")
+    p.add_argument("--whitelist", dest="whitelist", metavar="PATH",
+                   help="keep only contacts whose email domain matches an entry "
+                        "in this file (one domain per line; '#' comments and "
+                        "blank lines ignored; subdomains match too)")
     p.add_argument("--blacklist", dest="blacklist", metavar="PATH",
-                   help="file of domains to exclude from contacts (one per "
-                        "line; '#' comments and blank lines ignored)")
+                   help="drop contacts/addresses whose email domain matches an "
+                        "entry in this file (one per line; '#' comments and "
+                        "blank lines ignored; subdomains match too)")
     # Export filters (apply when the operation resolves to an export).
     p.add_argument("--type", dest="type",
                    help="match contact type against any of LIST (%s)"

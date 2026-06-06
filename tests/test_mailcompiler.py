@@ -18,6 +18,8 @@ from mailcompiler.mailcompiler import (
     OUTLOOK_FIELDS, write_outlook_csv, parse_outlook_csv,
     write_xlsx_rows, write_outlook_xlsx, parse_outlook_xlsx,
     _write_xlsx, _read_xlsx, iter_mbox_messages,
+    load_domain_list, contact_domains, contact_in_domains, select_by_domains,
+    main,
 )
 
 
@@ -771,3 +773,87 @@ class TestBodyCap:
         assert 0 < len(capped) <= 400      # cap honored
         assert len(full) >= 5000           # uncapped keeps the whole body
         assert len(capped) < len(full)
+
+
+class TestLoadDomainList:
+    def test_skips_comments_and_blanks(self):
+        text = ("# header\n"
+                "intel.com\n"
+                "\n"
+                "   # indented comment\n"
+                "@nvidia.com\n"
+                "  GD.com  \n")
+        path = _write_tmp(text, ".txt")
+        try:
+            domains = load_domain_list(path)
+        finally:
+            os.remove(path)
+        assert domains == {"intel.com", "nvidia.com", "gd.com"}
+
+
+class TestContactDomains:
+    def test_collects_primary_and_emails(self):
+        c = _row(primary="a@intel.com", emails=["a@intel.com", "a@fab.intel.de"])
+        assert contact_domains(c) == {"intel.com", "fab.intel.de"}
+
+    def test_in_domains_exact_and_subdomain(self):
+        c = _row(primary="bob@fab.intel.com")
+        assert contact_in_domains(c, {"intel.com"})        # subdomain matches
+        assert contact_in_domains(_row(primary="x@gd.com"), {"gd.com"})
+        assert not contact_in_domains(_row(primary="x@intel.de"), {"intel.com"})
+
+    def test_matches_any_email(self):
+        c = _row(primary="p@gmail.com", emails=["p@gmail.com", "p@nvidia.com"])
+        assert contact_in_domains(c, {"nvidia.com"})       # secondary matches
+
+
+class TestSelectByDomains:
+    def _people(self):
+        return [
+            _row(primary="a@intel.com"),
+            _row(primary="b@nvidia.com"),
+            _row(primary="c@gmail.com"),
+            _row(primary="d@sub.intel.com"),
+        ]
+
+    def test_no_filters_is_identity(self):
+        kept, nw, nb = select_by_domains(self._people(), None, None)
+        assert len(kept) == 4 and nw == 0 and nb == 0
+
+    def test_whitelist_keeps_only_matches(self):
+        kept, nw, nb = select_by_domains(self._people(), {"intel.com"}, None)
+        emails = {c["primary_email"] for c in kept}
+        assert emails == {"a@intel.com", "d@sub.intel.com"}   # subdomain too
+        assert nw == 2 and nb == 0
+
+    def test_blacklist_drops_matches(self):
+        kept, nw, nb = select_by_domains(self._people(), None, {"gmail.com"})
+        assert "c@gmail.com" not in {c["primary_email"] for c in kept}
+        assert nw == 0 and nb == 1
+
+    def test_whitelist_then_blacklist(self):
+        kept, nw, nb = select_by_domains(
+            self._people(), {"intel.com", "nvidia.com"}, {"nvidia.com"})
+        assert {c["primary_email"] for c in kept} == {
+            "a@intel.com", "d@sub.intel.com"}
+        assert nw == 1 and nb == 1
+
+
+class TestWhitelistExportCli:
+    def test_export_filters_by_whitelist(self):
+        rows = [
+            _row(first="A", last="One", primary="a@intel.com", n_recv=1),
+            _row(first="B", last="Two", primary="b@gmail.com", n_recv=1),
+            _row(first="C", last="Three", primary="c@nvidia.com", n_recv=1),
+        ]
+        dbp = _write_tmp(json.dumps(rows), ".json")
+        wlp = _write_tmp("# semis\nintel.com\nnvidia.com\n", ".txt")
+        outp = _write_tmp("", ".csv")
+        try:
+            main(["-i", dbp, "-o", outp, "--whitelist", wlp])
+            got = load_rows(outp)
+        finally:
+            for p in (dbp, wlp, outp):
+                os.remove(p)
+        emails = {c["primary_email"] for c in got}
+        assert emails == {"a@intel.com", "c@nvidia.com"}  # gmail dropped
