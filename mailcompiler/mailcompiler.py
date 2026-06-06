@@ -21,7 +21,7 @@ pypff (libpff-python).
 Spec (confirmed with user):
   - Contacts = recipients (To/Cc) of mail I SENT, plus senders (From) of mail I
     RECEIVED. Self addresses are excluded.
-  - Spam-labeled messages are skipped (unsolicited, not correspondence).
+  - Spam- and Trash-labeled messages are skipped (not real correspondence).
   - Automated/bulk senders (no-reply, mailer-daemon, bulk ESP domains, ...) are
     filtered out.
   - Identities merged by display name (multiple addresses -> one person).
@@ -201,9 +201,10 @@ def _norm_affix(tok):
 
 
 def _strip_name_affixes(parts):
-    """Drop honorific prefixes from the front and generational/honorific
-    suffixes from the end of a tokenized name (never down to empty)."""
-    toks = list(parts)
+    """Drop number-only tokens ("Michael Smith 2" -> the 2), honorific
+    prefixes from the front, and generational/honorific suffixes from the end of
+    a tokenized name (never down to empty)."""
+    toks = [t for t in parts if any(ch.isalpha() for ch in t)]
     while len(toks) > 1 and _norm_affix(toks[0]) in _NAME_PREFIXES:
         toks.pop(0)
     while len(toks) > 1 and _norm_affix(toks[-1]) in _NAME_SUFFIXES:
@@ -233,7 +234,7 @@ def _cap_name_word(w):
     def cap_atom(a):
         if not a:
             return a
-        if "'" in a:                        # O'Brien, D'Angelo
+        if "'" in a:                        # O'Hara, D'Artagnan
             x, _, y = a.partition("'")
             return cap_atom(x) + "'" + cap_atom(y)
         if not (a.isupper() or a.islower()):
@@ -261,8 +262,8 @@ _JUNK_SURNAME_TOKENS = _ROLE_NAME_TOKENS | {
 
 def _email_name_tokens(email_addr):
     """Human-looking tokens from an email local-part (alpha, optional trailing
-    digits, <=20 chars): "anders.a.persson" -> ['anders', 'persson'] (the bare
-    'a' initial is dropped)."""
+    digits, <=20 chars): "wile.e.coyote" -> ['wile', 'coyote'] (the bare
+    'e' initial is dropped)."""
     local = (email_addr or "").split("@")[0]
     return [t for t in re.split(r'[._\-+]+', local)
             if re.fullmatch(r'[A-Za-z]{2,}\d*', t) and len(t) <= 20]
@@ -270,20 +271,26 @@ def _email_name_tokens(email_addr):
 
 def _cap_surname(tok):
     """Capitalize a surname token, preserving hyphenated/Mc compounds
-    (mccants -> McCants, allen-mccormack -> Allen-McCormack)."""
+    (mcfly -> McFly, smith-jones -> Smith-Jones)."""
     return " ".join(_cap_name_word(p) for p in (tok or "").split())
+
+
+# Punctuation allowed inside a real surname (apostrophe variants, hyphen, dot,
+# space). Everything else that is not a Unicode letter marks the value as junk.
+_SURNAME_OK_PUNCT = set(" .-'’‘ʼ`")
 
 
 def _is_weak_surname(last):
     """True when a last name is not a usable surname: blank, a single-letter
-    initial, a bracketed/garbage token (e.g. "[us]"), or a role/agency marker
-    (civ, afmc, navy, ...). Hyphens, apostrophes, periods and spaces are allowed
-    so real names (O'Brien, Allen-Mccormack, St. John) are not flagged."""
+    initial, a value containing digits or stray symbols (e.g. "[us]", "2"), or a
+    role/agency marker (civ, afmc, navy, ...). Accented Unicode letters (a/o/u
+    with diacritics), hyphens, apostrophes (straight or curly), periods and
+    spaces are allowed so real international names pass."""
     s = (last or "").strip()
-    alpha = re.sub(r'[^A-Za-z]', '', s)
+    alpha = "".join(ch for ch in s if ch.isalpha())     # Unicode-aware
     if len(alpha) <= 1:
         return True
-    if re.search(r"[^A-Za-z .'-]", s):
+    if any(not (ch.isalpha() or ch in _SURNAME_OK_PUNCT) for ch in s):
         return True
     return alpha.lower() in _JUNK_SURNAME_TOKENS
 
@@ -293,18 +300,20 @@ def recover_surname_from_email(first, last, email_addr):
 
     A blank, initial-only, bracketed, or role/agency last name (see
     _is_weak_surname) is not a real surname -- the real one is often hiding in
-    the email (display "Anders A" for anders.a.persson@..., or last "Civ" for
-    alan.j.davis.civ@us.navy.mil). When the local-part's leading token matches
+    the email (display "Wile E" for wile.e.coyote@..., or last "Civ" for
+    wile.e.coyote.civ@example.mil). When the local-part's leading token matches
     the first name, the remaining tokens are treated as the name: middle
-    initials, bare numbers, trailing digit suffixes (joyce4 -> joyce) and
+    initials, bare numbers, trailing digit suffixes (name4 -> name) and
     affiliation markers (civ/ctr/mil) are dropped. The surname is recovered ONLY
     when exactly one name token then remains, so personal addresses yield a name
-    (-> "Davis") while structured org/role addresses with several leftover
-    tokens recover nothing (paul.civ.usaf.afmc.afrl@...).
+    (-> "Coyote") while structured org/role addresses with several leftover
+    tokens recover nothing (wile.e.coyote.usaf.afmc.afrl@example.mil).
 
-    Returns: the original last name if it is already a real surname; the
-    recovered surname when one is found; otherwise "" (blank) so a junk surname
-    is dropped rather than kept."""
+    Returns: the original last name if it is already a real surname; a fuller
+    surname recovered from the email when one is found; a genuine single-letter
+    initial kept as-is when nothing fuller exists ("First X" -> "X", a real
+    abbreviated surname); otherwise "" (blank) so true junk (Civ, [us], 2) is
+    dropped rather than kept."""
     if not _is_weak_surname(last):
         return last
     # split on dot/underscore/plus; keep hyphens so compound surnames survive
@@ -321,8 +330,10 @@ def recover_surname_from_email(first, last, email_addr):
         if (len(surname_toks) == 1 and surname_toks[0].lower() != ftok[0].lower()
                 and surname_toks[0].lower() not in _JUNK_SURNAME_TOKENS):
             return _cap_surname(surname_toks[0])
-    # weak and unrecoverable: blank it so the both-names rule drops the record
-    return ""
+    # nothing fuller found: keep a real single-letter initial (the surname as
+    # given, e.g. "First X"); blank only true junk so it is dropped.
+    init = "".join(ch for ch in (last or "") if ch.isalpha())
+    return init.upper() if len(init) == 1 else ""
 
 
 def split_name(display, email_addr):
@@ -332,6 +343,9 @@ def split_name(display, email_addr):
     removal ("[US]", "(contr-diro)", "Name/dept/SUPEX"), and surname recovery /
     cross-validation from the email local-part for weak names."""
     name = (display or "").strip().strip('"\'').strip()
+    # Normalize curly/typographic apostrophes to straight so a name with a
+    # curly apostrophe (U+2019) is treated like the straight-quote form.
+    name = name.translate({0x2019: "'", 0x2018: "'", 0x02bc: "'", 0x60: "'"})
     # Remove balanced bracket/paren tags anywhere ("[US]", "[US-US]",
     # "(contr-diro)", "(MS)") -- "Mathews (US), Phil" -> "Mathews , Phil".
     name = re.sub(r'[\[(][^\])]*[\])]', ' ', name)
@@ -340,8 +354,6 @@ def split_name(display, email_addr):
     name = re.split(r'\s*[/\\<|]', name)[0].strip().rstrip(").-").strip()
     # No usable display name: synthesize from the email local-part, but only
     # from human-looking tokens (alpha, optional trailing digits, <=20 chars).
-    # This recovers "eric.wallace.4" -> Eric Wallace while rejecting hash/unsub
-    # local-parts like "8a795fa6-038a-4166-...".
     if not name or ("@" in name and " " not in name):
         toks = _email_name_tokens(email_addr)
         if not toks:
@@ -1002,13 +1014,15 @@ def _normalize_dt(dt):
 def _ingest_message(msg, recs, self_set, include_cc=True):
     """Fold one normalized message into `recs`/`self_set`.
 
-    Returns False if the message was skipped (spam), True otherwise. By default
+    Returns False if the message was skipped (spam or trash), True otherwise. By default
     the other To/Cc recipients of mail I received (people on a thread with me,
     not the sender) are also recorded so they become contacts, but they do not
     count as sent or received -- only direct correspondence increments those.
     Pass include_cc=False (the --no-cc flag) to skip those co-recipients.
     """
-    if msg["is_spam"]:
+    # Skip Spam (unsolicited) and Trash (mail the user deleted) -- neither is
+    # real correspondence, so their senders/recipients are not contacts.
+    if msg["is_spam"] or msg.get("is_trash"):
         return False
     for a in msg["self_hints"]:
         if a:
@@ -1075,6 +1089,7 @@ def iter_mbox_messages(path, body_cap=BODY_CAP):
             "date": dt,
             "is_sent": "Sent" in labels,
             "is_spam": "Spam" in labels,
+            "is_trash": "Trash" in labels,
             "self_hints": [a for _, a in getaddresses(m.get_all("Delivered-To", [])) if a],
             "body": _message_text(m, body_cap),
         }
@@ -1481,7 +1496,7 @@ def dump_llm(src, out_path):
     with open(out_path, "w", encoding="utf-8") as fh:
         for msg in src:
             n += 1
-            if msg["is_spam"]:
+            if msg["is_spam"] or msg.get("is_trash"):
                 spam += 1
                 continue
             from_emails = [a for _, a in msg["from"] if a]
@@ -1678,7 +1693,7 @@ def _scrub_controls(value):
 def _normalize_name(name):
     """Trim/collapse whitespace and fix casing of all-upper/all-lower tokens
     (handling hyphens, apostrophes and Mc-), leaving already-mixed-case names
-    (McX, O'Brien, DeShawn) untouched. Surname particles (van, de, der, ...) are
+    (McX, DeShawn, MacLeod) untouched. Surname particles (van, de, der, ...) are
     forced lowercase except in leading position."""
     toks = [t for t in re.sub(r"\s+", " ", (name or "").strip()).split(" ") if t]
     out = []
@@ -1896,7 +1911,7 @@ def reconcile_contacts(rows, log=None):
             log("normalize phone: %r -> %r (%s)"
                 % (old_ph, r["phone"], _record_label(r)))
         # recover a missing/initial-only surname from a personal email local-part
-        # (e.g. blank or "A" -> "Persson" from anders.a.persson@...)
+        # (e.g. a blank or single-initial last name -> a full surname)
         old_ln = r.get("last_name", "")
         new_ln = recover_surname_from_email(
             r.get("first_name", ""), old_ln, r.get("primary_email", ""))
@@ -2237,6 +2252,11 @@ def cmd_import(args, ifmt, ofmt):
     if args.blacklist:
         blacklist = load_domain_files(args.blacklist, "blacklist")
 
+    verbose = getattr(args, "verbose", False)
+
+    def vlog(reason, email, extra=""):
+        sys.stderr.write("  discard %-12s %s%s\n" % (reason, email, extra))
+
     recs = defaultdict(Rec)  # primary email -> Rec
     n_msgs = 0
     n_skip_spam = 0
@@ -2248,19 +2268,30 @@ def cmd_import(args, ifmt, ofmt):
         if not _ingest_message(msg, recs, self_set,
                                include_cc=not getattr(args, "no_cc", False)):
             n_skip_spam += 1
+            if verbose:                  # the only skip path is spam/trash
+                reason = "spam" if msg["is_spam"] else "trash"
+                subj = (msg.get("subject") or "").strip().replace("\n", " ")[:60]
+                for _, a in msg["from"]:
+                    if a:
+                        vlog(reason, a, " | " + subj if subj else "")
         if n_msgs % 50000 == 0:
             sys.stderr.write(f"  parsed {n_msgs:,} messages\n")
             sys.stderr.flush()
 
-    sys.stderr.write(f"Done parsing: {n_msgs:,} messages, {n_skip_spam:,} spam skipped.\n")
+    sys.stderr.write(
+        f"Done parsing: {n_msgs:,} messages, {n_skip_spam:,} spam/trash skipped.\n")
     sys.stderr.write(f"Self addresses: {sorted(self_set)}\n")
 
     # ---- drop self + blacklist + bots ---------------------------------------
     for a in list(recs):
         if a in self_set:
+            if verbose:
+                vlog("self", a)
             del recs[a]
     blacklisted = {a for a in recs if is_blacklisted(a, blacklist)}
     for a in blacklisted:
+        if verbose:
+            vlog("blacklisted", a)
         del recs[a]
     if blacklist:
         sys.stderr.write(
@@ -2268,6 +2299,8 @@ def cmd_import(args, ifmt, ofmt):
             f"({len(blacklist):,} domains).\n")
     bots = {a for a in recs if is_bot(a)}
     for a in bots:
+        if verbose:
+            vlog("automated", a)
         del recs[a]
     sys.stderr.write(f"Filtered {len(bots):,} automated/bulk addresses.\n")
 
@@ -2333,7 +2366,15 @@ def cmd_import(args, ifmt, ofmt):
     # people you only shared a thread with (To/Cc co-recipients of mail you
     # received), who have no sent/received count.
     n_built = len(people)
-    people = [p for p in people if p["first_name"] and p["last_name"]]
+    kept = []
+    for p in people:
+        if p["first_name"] and p["last_name"]:
+            kept.append(p)
+        elif verbose:
+            vlog("no-name", p["primary_email"],
+                 " (first=%r last=%r display=%r)"
+                 % (p["first_name"], p["last_name"], p["display_name"]))
+    people = kept
     n_kept = len(people)
     sys.stderr.write(
         f"Contacts: {n_built:,} built -> {n_kept:,} with full name.\n")
@@ -2466,8 +2507,10 @@ def parse_args(argv=None):
                         "addresses, merge duplicates by email and by name, "
                         "recompute fields, and pick the best primary email")
     p.add_argument("-v", "--verbose", action="store_true",
-                   help="with --reconcile, print every action taken (drops, "
-                        "merges, field changes) to stderr")
+                   help="print every discard/action to stderr: on import, each "
+                        "skipped email and why (spam, trash, self, blacklisted, "
+                        "automated, no-name); with --reconcile, every "
+                        "drop/merge/field change")
     p.add_argument("--force", action="store_true",
                    help="when an imported record overlaps an existing one, "
                         "overwrite the existing text fields (company, title, "
