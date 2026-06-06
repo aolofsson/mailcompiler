@@ -19,7 +19,7 @@ vCard and CSV.
 - Automatic extraction of email conversations into contacts
 - Automatic extraction of phone numbers from email signatures
 - Incremental non-destructive merging of into a JSON database
-- Deduplication of records
+- Deduplication and reconciliation of records
 - Black list email list support
 - Automatic filtering of bot farm email addresses
 - Record filtering on export
@@ -39,8 +39,25 @@ mc -i contacts.json -o contacts.xlsx                 # export to excel
 
 There's one command, `mc`, and one JSON database. `mc` infers the operation from
 the `-i`/`-o` file extensions: a mailbox/vCard/CSV/XLSX/LinkedIn in **imports**;
-a JSON DB in **exports** (or `--dedup`). Imports always fold into the existing
-`-o` (never wiping it). The rest of this README is the details.
+a JSON DB in **exports** (or `--reconcile`). Imports always fold into the existing
+`-o` (never wiping it; the first import creates it). The rest of this README is
+the details.
+
+### Set the database once with `$MC_DB`
+
+So you don't repeat `-o contacts.json` on every command, point `$MC_DB` at your
+database; a missing `-i` or `-o` then defaults to it (explicit flags still win):
+
+```bash
+export MC_DB=~/contacts.json     # in your shell rc
+mc -i takeout.mbox               # -o defaults to $MC_DB (created if absent)
+mc -i archive.pst                # fold another source in
+mc --reconcile                   # -i and -o both default to $MC_DB
+mc -o leads.xlsx                 # export: -i defaults to $MC_DB
+```
+
+`mc` prints which path it resolved (e.g. `Using $MC_DB for -o/--output: ...`). If
+neither the flag nor `$MC_DB` is set, it errors.
 
 ## Installation
 
@@ -131,9 +148,9 @@ Export in Outlook's column layout, as CSV or XLSX (`--oformat outlook`):
     mc -i data/contacts.json -o outlook.csv --oformat outlook
     mc -i data/contacts.json -o outlook.xlsx --oformat outlook
 
-Deduplicate contacts sharing a first+last name, rewriting in place:
+Clean and merge duplicate records, rewriting in place:
 
-    mc -i data/contacts.json -o data/contacts.json --dedup
+    mc -i data/contacts.json -o data/contacts.json --reconcile
 
 Merge one database into another (folding `extra.json` into `data/contacts.json`):
 
@@ -144,7 +161,7 @@ Merge one database into another (folding `extra.json` into `data/contacts.json`)
 ```
 usage: mc [-h] -i INPUT -o OUTPUT
           [--iformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}]
-          [--oformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}] [--dedup]
+          [--oformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}]
           [--reconcile] [--force] [--llm] [--max-body BYTES] [--no-cc]
           [--whitelist PATH [PATH ...]]
           [--blacklist PATH [PATH ...]] [--type TYPE] [--company COMPANY]
@@ -159,10 +176,11 @@ options:
   -h, --help            show this help message and exit
   -i INPUT, --input INPUT
                         input path: a mailbox (.mbox/.pst), a vCard (.vcf/.vcd), an
-                        Outlook CSV (--iformat outlook), or a contacts .json
+                        Outlook CSV (--iformat outlook), or a contacts .json.
+                        Defaults to $MC_DB if set.
   -o OUTPUT, --output OUTPUT
                         output path: a .json contacts DB, a .csv/.vcf export, or a .jsonl
-                        corpus (with --llm)
+                        corpus (with --llm). Defaults to $MC_DB if set.
   --iformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}
                         force the input format instead of inferring it from the extension;
                         'outlook' reads an Outlook/Google CSV; 'linkedin' reads a LinkedIn
@@ -170,10 +188,9 @@ options:
   --oformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}
                         force the output format instead of inferring it from the
                         extension; 'outlook' writes Outlook's CSV layout
-  --dedup               merge contacts sharing a first+last name (json -> json)
   --reconcile           clean and merge records (json -> json): drop junk/role
                         addresses, merge duplicates by email and by name, recompute
-                        fields, and pick the best primary email. A superset of --dedup.
+                        fields, and pick the best primary email
   --force               when an imported record overlaps an existing one, overwrite the
                         existing text fields (company, title, name, ...) with the incoming
                         values; by default existing (hand-edited) values are kept
@@ -514,38 +531,11 @@ filters (`--type`, `--first-name`, `--last-name`, `--email-domain`,
 `--whitelist`, `--blacklist`, `--min/max-emails`, `--min/max-sent`,
 `--min/max-received`, `--first-after/before`, `--last-after/before`).
 
-## Deduplicating contacts
-
-A JSON-to-JSON run with `--dedup` merges rows that share the same first **and**
-last name (case-insensitive), which can accumulate from multiple imports or
-manual edits.
-
-```bash
-mc -i data/contacts.json -o data/contacts.json --dedup   # in place
-mc -i data/contacts.json -o deduped.json --dedup          # or to a new file
-```
-
-When duplicates are merged:
-
-- counts (`num_emails`/`num_sent`/`num_received`) are **summed**, `emails`
-  and `source` are **unioned**, and the interaction date range **widens**;
-- conflicting annotation fields (`type`, `friend`, `title`, `company`, `phone`,
-  `address`) are **kept all** (distinct values joined with ` | `), so no manual
-  edit is lost;
-- the `primary_email` and name casing come from the highest-volume duplicate.
-
-Rows missing a first or last name are left untouched. `-o` may equal `-i` to
-rewrite in place. Dedup is a JSON-to-JSON operation; to deduplicate before an
-export, dedup to `.json` first and then export. Because matching is by name
-only, two different people with the same name will be merged -- the joined
-`company` and multiple `emails` make such cases easy to spot for manual review.
-
 ## Reconciling contacts
 
 After building a database from several sources (mbox, PST, vCard, Outlook,
-LinkedIn), `--reconcile` is a one-step cleanup pass over the JSON DB. It is a
-**superset of `--dedup`** -- it merges by name too -- plus it does the things
-name-dedup can't:
+LinkedIn), `--reconcile` is a one-step cleanup pass over the JSON DB that merges
+duplicates (by both name and email) and tidies records:
 
 ```bash
 mc --reconcile -i contacts.json -o contacts.json   # clean + merge, in place
@@ -557,10 +547,10 @@ In order, reconcile:
    role/generic mailboxes (`no-reply@`, `info@`, `sales@`, ...).
 2. **Merges duplicates by shared email** -- the same person under two display
    names who share an address (e.g. `Bob Jones` and `Robert Jones`, both at
-   `bob@acme.com`) that name-dedup misses. Free-provider (gmail/...), role, and
+   `bob@acme.com`) that a name match misses. Free-provider (gmail/...), role, and
    bot addresses are **not** used as merge keys, so people who merely share a
    common mailbox are not fused.
-3. **Merges duplicates by name** (the `--dedup` step).
+3. **Merges duplicates by name** (same first+last, case-insensitive).
 4. **Recomputes** `num_emails`, lowercases/dedupes `emails`, and fills a blank
    `company` from the primary domain.
 5. **Picks the best primary email** -- the address whose domain matches the

@@ -1321,3 +1321,63 @@ class TestPipelineEndToEnd:
         assert not any(r["last_name"] == "Info" for r in after)
         # xlsx export round-trips equal to the reconciled json
         assert xl_rows == after
+
+
+class TestMcDbDefault:
+    def _set_env(self, value):
+        old = os.environ.get("MC_DB")
+        if value is None:
+            os.environ.pop("MC_DB", None)
+        else:
+            os.environ["MC_DB"] = value
+        return old
+
+    def _restore_env(self, old):
+        if old is None:
+            os.environ.pop("MC_DB", None)
+        else:
+            os.environ["MC_DB"] = old
+
+    def test_output_defaults_to_mc_db(self):
+        src = _write_tmp(json.dumps(
+            [_row(first="Bob", last="Jones", primary="bob@x.com", n_recv=1)]),
+            ".json")
+        dbp = _write_tmp("", ".json")
+        old = self._set_env(dbp)
+        try:
+            main(["-i", src])            # no -o -> defaults to $MC_DB
+            got = load_rows(dbp)
+        finally:
+            self._restore_env(old)
+            for p in (src, dbp):
+                os.remove(p)
+        assert {r["primary_email"] for r in got} == {"bob@x.com"}
+
+    def test_input_defaults_to_mc_db(self):
+        dbp = _write_tmp(json.dumps(
+            [_row(first="Ann", last="Lee", primary="ann@x.com", n_recv=1)]),
+            ".json")
+        outp = _write_tmp("", ".csv")
+        old = self._set_env(dbp)
+        try:
+            main(["-o", outp])           # no -i -> defaults to $MC_DB (export)
+            got = load_rows(outp)
+        finally:
+            self._restore_env(old)
+            for p in (dbp, outp):
+                os.remove(p)
+        assert {r["primary_email"] for r in got} == {"ann@x.com"}
+
+    def test_error_when_unset_and_missing(self):
+        src = _write_tmp(json.dumps(
+            [_row(first="A", last="B", primary="a@x.com", n_recv=1)]), ".json")
+        old = self._set_env(None)        # unset MC_DB
+        raised = False
+        try:
+            main(["-i", src])            # no -o and no $MC_DB -> error
+        except SystemExit:
+            raised = True
+        finally:
+            self._restore_env(old)
+            os.remove(src)
+        assert raised

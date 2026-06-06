@@ -2172,13 +2172,14 @@ def parse_args(argv=None):
                     "reconciles (-o .json --reconcile). Imports and DB writes "
                     "always fold into the existing -o (never wiping it); pass "
                     "--force to overwrite overlapping fields.")
-    p.add_argument("-i", "--input", dest="input", required=True,
+    p.add_argument("-i", "--input", dest="input",
                    help="input path: a mailbox (.mbox/.pst), a vCard "
                         "(.vcf/.vcd), an Outlook CSV (--iformat outlook), or a "
-                        "contacts .json")
-    p.add_argument("-o", "--output", dest="output", required=True,
+                        "contacts .json. Defaults to $MC_DB if set.")
+    p.add_argument("-o", "--output", dest="output",
                    help="output path: a .json contacts DB, a .csv/.vcf export, "
-                        "or a .jsonl corpus (with --llm)")
+                        "or a .jsonl corpus (with --llm). Defaults to $MC_DB "
+                        "if set.")
     p.add_argument("--iformat", choices=FORMATS,
                    help="force the input format instead of inferring it from "
                         "the extension; 'outlook' reads an Outlook/Google CSV")
@@ -2248,8 +2249,21 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
+def _resolve_db_default(args):
+    """Fill a missing -i/-o from $MC_DB so the database path can be set once in
+    the environment instead of repeated on every command."""
+    db = os.environ.get("MC_DB", "").strip()
+    for attr, flag in (("input", "-i/--input"), ("output", "-o/--output")):
+        if not getattr(args, attr):
+            if not db:
+                sys.exit("error: no %s given and $MC_DB is not set" % flag)
+            setattr(args, attr, db)
+            sys.stderr.write("Using $MC_DB for %s: %s\n" % (flag, db))
+
+
 def main(argv=None):
     args = parse_args(argv)
+    _resolve_db_default(args)
     ifmt = resolve_format(args.input, args.iformat)
     ofmt = resolve_format(args.output, args.oformat)
     if ifmt is None:
