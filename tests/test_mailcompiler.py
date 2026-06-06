@@ -196,7 +196,7 @@ class TestRoundTrip:
         "title": "CTO", "company": "Globex", "phone": "+16502530000",
         "address": "10 Loop, CA", "primary_email": "jordan@globex.com",
         "emails": ["jordan@globex.com", "jordan.vale@globex.com"],
-        "num_emails": 3, "num_sent": 2, "num_received": 1,
+        "num_emails": 3, "num_sent": 2, "num_received": 1, "num_cc": 0,
         "first_interaction": "2023-01-01", "last_interaction": "2024-05-05",
         "source": "a.mbox | b.mbox",
     }]
@@ -294,6 +294,34 @@ class TestIngestMessage:
                              to=[("Bob", "bob@x.com")], is_sent=True,
                              body=body), recs, ss)
         assert not recs["bob@x.com"].phones   # our own signature is not theirs
+
+    def test_received_corecipients_ignored_by_default(self):
+        recs = defaultdict(Rec)
+        _ingest_message(_msg(frm=[("Bob", "bob@x.com")],
+                             to=[("Me", "me@self.com"), ("Sue", "sue@y.com")]),
+                        recs, {"me@self.com"})
+        assert "bob@x.com" in recs and recs["bob@x.com"].num_recv == 1
+        assert "sue@y.com" not in recs        # co-recipient not harvested
+
+    def test_include_cc_harvests_corecipients(self):
+        recs = defaultdict(Rec)
+        _ingest_message(_msg(frm=[("Bob", "bob@x.com")],
+                             to=[("Me", "me@self.com"), ("Sue", "sue@y.com")]),
+                        recs, {"me@self.com"}, include_cc=True)
+        assert recs["bob@x.com"].num_recv == 1   # sender still num_recv
+        assert recs["bob@x.com"].num_cc == 0
+        assert recs["sue@y.com"].num_cc == 1     # co-recipient counted as cc
+        assert recs["sue@y.com"].num_recv == 0
+        assert "me@self.com" not in recs         # self never harvested
+
+    def test_include_cc_does_not_double_count_sender(self):
+        recs = defaultdict(Rec)
+        # sender also appears in To: should not get both num_recv and num_cc
+        _ingest_message(_msg(frm=[("Bob", "bob@x.com")],
+                             to=[("Bob", "bob@x.com"), ("Me", "me@self.com")]),
+                        recs, {"me@self.com"}, include_cc=True)
+        assert recs["bob@x.com"].num_recv == 1
+        assert recs["bob@x.com"].num_cc == 0
 
 
 class TestSignatureText:
@@ -857,3 +885,23 @@ class TestWhitelistExportCli:
                 os.remove(p)
         emails = {c["primary_email"] for c in got}
         assert emails == {"a@intel.com", "c@nvidia.com"}  # gmail dropped
+
+    def test_export_unions_multiple_whitelist_files(self):
+        rows = [
+            _row(first="A", last="One", primary="a@intel.com", n_recv=1),
+            _row(first="B", last="Two", primary="b@gmail.com", n_recv=1),
+            _row(first="C", last="Three", primary="c@lockheedmartin.com", n_recv=1),
+        ]
+        dbp = _write_tmp(json.dumps(rows), ".json")
+        semis = _write_tmp("# semis\nintel.com\n", ".txt")
+        defense = _write_tmp("# defense\nlockheedmartin.com\n", ".txt")
+        outp = _write_tmp("", ".csv")
+        try:
+            # two files passed to one flag are unioned
+            main(["-i", dbp, "-o", outp, "--whitelist", semis, defense])
+            got = load_rows(outp)
+        finally:
+            for p in (dbp, semis, defense, outp):
+                os.remove(p)
+        emails = {c["primary_email"] for c in got}
+        assert emails == {"a@intel.com", "c@lockheedmartin.com"}

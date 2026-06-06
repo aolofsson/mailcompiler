@@ -62,6 +62,11 @@ Build the JSON contacts database from a Gmail Takeout mbox:
 
     mc -i "All mail Including Spam and Trash.mbox" -o data/contacts.json
 
+Also harvest the other To/Cc recipients of mail you received (people on a
+thread with you, not just the sender), counted as `num_cc`:
+
+    mc -i "All mail Including Spam and Trash.mbox" -o data/contacts.json --include-cc
+
 Direct extraction from Takeout mbox to an xlsx spreadsheet:
 
     mc -i "All mail Including Spam and Trash.mbox" -o data/contacts.xlsx
@@ -102,6 +107,15 @@ Export filtered contacts to CSV:
 
     mc -i data/contacts.json --company Intel,AMD --min-emails 5 -o intel_amd.csv
 
+Export only contacts at target-company domains (`--whitelist`), or drop
+unwanted domains (`--blacklist`); both read one domain per line and ignore
+`#` comments and blank lines, and match subdomains too. Each flag takes a
+**list of files** (unioned), so you can keep categories in separate files:
+
+    mc -i data/contacts.json --whitelist companies.txt -o targets.xlsx
+    mc -i data/contacts.json --whitelist semiconductor.txt defense.txt equipment.txt -o targets.xlsx
+    mc -i data/contacts.json --blacklist spam_domains.txt competitors.txt -o cleaned.json
+
 Export in Outlook's column layout, as CSV or XLSX (`--oformat outlook`):
 
     mc -i data/contacts.json -o outlook.csv --oformat outlook
@@ -118,14 +132,17 @@ Merge one database into another (folding `extra.json` into `data/contacts.json`)
 ## MC Help
 
 ```
-usage: mc [-h] -i INPUT -o OUTPUT [--iformat {json,csv,outlook,vcard,mbox,pst,jsonl}]
-          [--oformat {json,csv,outlook,vcard,mbox,pst,jsonl}] [--dedup] [--merge] [--llm]
-          [--blacklist PATH] [--type TYPE] [--company COMPANY] [--first-name FIRST_NAME]
-          [--last-name LAST_NAME] [--email-domain EMAIL_DOMAIN] [--min-emails MIN_EMAILS]
+usage: mc [-h] -i INPUT -o OUTPUT
+          [--iformat {json,csv,xlsx,outlook,vcard,mbox,pst,jsonl}]
+          [--oformat {json,csv,xlsx,outlook,vcard,mbox,pst,jsonl}] [--dedup] [--merge]
+          [--llm] [--max-body BYTES] [--include-cc] [--whitelist PATH [PATH ...]]
+          [--blacklist PATH [PATH ...]] [--type TYPE] [--company COMPANY]
+          [--first-name FIRST_NAME] [--last-name LAST_NAME]
+          [--email-domain EMAIL_DOMAIN] [--min-emails MIN_EMAILS]
           [--max-emails MAX_EMAILS] [--min-sent MIN_SENT] [--max-sent MAX_SENT]
           [--min-received MIN_RECEIVED] [--max-received MAX_RECEIVED]
-          [--last-after YYYY-MM-DD] [--last-before YYYY-MM-DD] [--first-after YYYY-MM-DD]
-          [--first-before YYYY-MM-DD]
+          [--last-after YYYY-MM-DD] [--last-before YYYY-MM-DD]
+          [--first-after YYYY-MM-DD] [--first-before YYYY-MM-DD]
 
 options:
   -h, --help            show this help message and exit
@@ -135,10 +152,10 @@ options:
   -o OUTPUT, --output OUTPUT
                         output path: a .json contacts DB, a .csv/.vcf export, or a .jsonl
                         corpus (with --llm)
-  --iformat {json,csv,outlook,vcard,mbox,pst,jsonl}
+  --iformat {json,csv,xlsx,outlook,vcard,mbox,pst,jsonl}
                         force the input format instead of inferring it from the extension;
                         'outlook' reads an Outlook/Google CSV
-  --oformat {json,csv,outlook,vcard,mbox,pst,jsonl}
+  --oformat {json,csv,xlsx,outlook,vcard,mbox,pst,jsonl}
                         force the output format instead of inferring it from the
                         extension; 'outlook' writes Outlook's CSV layout
   --dedup               merge contacts sharing a first+last name (json -> json)
@@ -146,8 +163,21 @@ options:
                         edits) instead of overwriting it
   --llm                 dump a per-email JSONL corpus (subject/from/to/date/body) from an
                         mbox/PST instead of building the DB
-  --blacklist PATH      file of domains to exclude from contacts (one per line; '#'
-                        comments and blank lines ignored)
+  --max-body BYTES      --llm: cap each message body to BYTES (default 262144; 0 =
+                        unlimited) so attachment blobs do not dominate
+  --include-cc          when importing a mailbox, also harvest the other To/Cc
+                        recipients of mail you received (people on a thread with you,
+                        not just the sender), counted as num_cc
+  --whitelist PATH [PATH ...]
+                        keep only contacts whose email domain matches an entry in these
+                        files (one domain per line; '#' comments and blank lines ignored;
+                        subdomains match too). Accepts multiple files (unioned) and may
+                        be repeated.
+  --blacklist PATH [PATH ...]
+                        drop contacts/addresses whose email domain matches an entry in
+                        these files (one per line; '#' comments and blank lines ignored;
+                        subdomains match too). Accepts multiple files (unioned) and may
+                        be repeated.
   --type TYPE           match contact type against any of LIST
                         (customer/competitor/investor/reporter/partner/vendor/other)
   --company COMPANY     match company against any of LIST
@@ -198,6 +228,7 @@ fields, in this order:
   "num_emails": 50,
   "num_sent": 30,
   "num_received": 20,
+  "num_cc": 0,
   "first_interaction": "2023-01-01",
   "last_interaction": "2025-03-15",
   "source": "work.mbox | takeout.mbox"
@@ -216,9 +247,10 @@ fields, in this order:
 | `address` | string | Annotation you fill in; set from a vCard `ADR`/`LABEL`, otherwise blank. |
 | `primary_email` | string | The most-used address; the record's key. |
 | `emails` | string[] | All known addresses for the person, primary first. |
-| `num_emails` | integer | Total messages exchanged (`num_sent` + `num_received`). |
+| `num_emails` | integer | Total messages involving this contact (`num_sent` + `num_received` + `num_cc`). |
 | `num_sent` | integer | Messages you sent to this contact. |
 | `num_received` | integer | Messages received from this contact. |
+| `num_cc` | integer | Messages where they were a To/Cc co-recipient on a thread with you (0 unless imported with `--include-cc`). |
 | `first_interaction` | string\|null | Earliest interaction date (`YYYY-MM-DD`), or `null` if unknown. |
 | `last_interaction` | string\|null | Latest interaction date (`YYYY-MM-DD`), or `null` if unknown. |
 | `source` | string | Origin file(s) the record came from, joined by ` \| `. |
@@ -273,7 +305,9 @@ if **all** of these hold:
 
 - It is a recipient (`To`/`Cc`) of mail you sent, **or** the sender (`From`) of
   mail you received (either direction qualifies). For PST, "sent" mail is the
-  **Sent Items** folder.
+  **Sent Items** folder. With `--include-cc`, the *other* `To`/`Cc` recipients of
+  mail you received also qualify (people on a thread with you, counted as
+  `num_cc`) -- broader reach, but noisier (large CC lists, mailing lists).
 - The message is **not** spam: the Gmail `Spam` label, or for PST the **Junk
   Email** folder, is skipped.
 - It is **not one of your own addresses** (auto-detected from the mbox
@@ -310,12 +344,31 @@ recruiting-spam.com
 @newsletters.example.org
 ```
 
+`--whitelist PATH` is the inverse, used on **export**: it keeps only contacts
+whose email domain (the `primary_email` or any address in `emails`) matches an
+entry in the file, dropping everyone else. It uses the same file format as
+`--blacklist` (one domain per line, `#` comments and blank lines ignored,
+subdomains matched), so a categorized list with `# section` headers works as-is:
+
+```text
+# companies.txt
+# -- semiconductor --
+intel.com
+nvidia.com
+# -- agencies --
+darpa.mil
+```
+
+`--whitelist` and `--blacklist` can be combined and apply to any export
+(`-o .csv/.xlsx/.vcf/.json`); whitelist keeps matches, blacklist then removes
+any that should still be dropped.
+
 ### Merge vs overwrite
 
 By default an import **overwrites** the output file. Pass `--merge` to fold the
 import into an existing database instead (in whichever format the output path
 uses). For an existing contact, the counts (`num_emails`, `num_sent`,
-`num_received`) are overwritten with the latest import, the email list is
+`num_received`, `num_cc`) are overwritten with the latest import, the email list is
 unioned, and the interaction date range widens; hand-edited fields (the blank
 annotation columns `type`/`friend`/`title`/`address`, plus name/company) are
 preserved. Contacts present only in the old file are left untouched. This lets
@@ -365,6 +418,15 @@ and date filters are inclusive ranges; all filters combine with AND. Note that
 `--company` matches the derived company *name* (e.g. `Globex`), while
 `--email-domain` matches the address domain (e.g. `globex.com`).
 
+For a long list of domains, use `--whitelist FILE...` (keep only matches) and/or
+`--blacklist FILE...` (drop matches) instead of a comma-separated `--email-domain`.
+Unlike `--email-domain`, these read files (`#` comments and blank lines
+ignored), match **any** of a contact's addresses (`primary_email` plus
+`emails`), and match **subdomains** too (`intel.com` also catches
+`fab.intel.com`). Each flag accepts **multiple files** (their domains are
+unioned, and the flag may also be repeated), so you can keep each category in
+its own file. They combine with each other and with all the column filters.
+
 ```bash
 # Customers and investors (the `type` column you filled in) -> vCard:
 mc -i data/contacts.json --type customer,investor -o leads.vcf
@@ -376,6 +438,10 @@ mc -i data/contacts.json \
 # All intel.com contacts since 2025 -> vCard:
 mc -i data/contacts.json \
   --email-domain intel.com --last-after 2025-01-01 -o intel.vcf
+
+# Only contacts at target-company domains, split across category files -> XLSX:
+mc -i data/contacts.json \
+  --whitelist semiconductor.txt defense.txt equipment.txt -o targets.xlsx
 ```
 
 The vCard maps name/emails (primary marked `PREF`), `company`->ORG,
@@ -384,9 +450,9 @@ CATEGORIES, plus a NOTE with the email counts and last-contact date.
 
 `--type` accepts only the legal values (`customer`, `competitor`, `investor`,
 `reporter`, `partner`, `vendor`, `other`). See `mc -h` for the full set of
-filters (`--type`, `--first-name`, `--last-name`, `--min/max-emails`,
-`--min/max-sent`, `--min/max-received`, `--first-after/before`,
-`--last-after/before`).
+filters (`--type`, `--first-name`, `--last-name`, `--email-domain`,
+`--whitelist`, `--blacklist`, `--min/max-emails`, `--min/max-sent`,
+`--min/max-received`, `--first-after/before`, `--last-after/before`).
 
 ## Deduplicating contacts
 
@@ -401,8 +467,8 @@ mc -i data/contacts.json -o deduped.json --dedup          # or to a new file
 
 When duplicates are merged:
 
-- counts (`num_emails`/`num_sent`/`num_received`) are **summed**, `emails` and
-  `source` are **unioned**, and the interaction date range **widens**;
+- counts (`num_emails`/`num_sent`/`num_received`/`num_cc`) are **summed**, `emails`
+  and `source` are **unioned**, and the interaction date range **widens**;
 - conflicting annotation fields (`type`, `friend`, `title`, `company`, `phone`,
   `address`) are **kept all** (distinct values joined with ` | `), so no manual
   edit is lost;

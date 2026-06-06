@@ -217,7 +217,7 @@ def company_from(email_addr):
 
 # ---- per-address accumulator ------------------------------------------------
 class Rec:
-    __slots__ = ("emails", "names", "phones", "num_sent", "num_recv",
+    __slots__ = ("emails", "names", "phones", "num_sent", "num_recv", "num_cc",
                  "first", "last")
 
     def __init__(self):
@@ -226,6 +226,7 @@ class Rec:
         self.phones = defaultdict(int)   # E.164 phone -> count (from signatures)
         self.num_sent = 0                # I -> them
         self.num_recv = 0                # them -> I
+        self.num_cc = 0                  # on a thread with me (To/Cc), --include-cc
         self.first = None
         self.last = None
 
@@ -245,7 +246,7 @@ TYPE_VALUES = ["customer", "competitor", "investor", "reporter", "partner",
 
 CSV_FIELDS = ["type", "friend", "last_name", "first_name", "title", "company",
               "phone", "address", "primary_email", "emails", "num_emails",
-              "num_sent", "num_received", "first_interaction",
+              "num_sent", "num_received", "num_cc", "first_interaction",
               "last_interaction", "source"]
 
 # Source values may contain spaces (mbox filenames), so they are joined with
@@ -276,6 +277,7 @@ def person_to_row(p, source):
         "num_emails": p["num_emails"],
         "num_sent": p["num_sent"],
         "num_received": p["num_received"],
+        "num_cc": p.get("num_cc", 0),
         "first_interaction": p["first_interaction"],
         "last_interaction": p["last_interaction"],
         "source": source,
@@ -304,6 +306,7 @@ def _normalize_row(d):
         "num_emails": _to_int(d.get("num_emails")),
         "num_sent": _to_int(d.get("num_sent")),
         "num_received": _to_int(d.get("num_received")),
+        "num_cc": _to_int(d.get("num_cc")),
         "first_interaction": (str(d.get("first_interaction") or "").strip() or None),
         "last_interaction": (str(d.get("last_interaction") or "").strip() or None),
         "source": str(d.get("source") or "").strip(),
@@ -362,6 +365,7 @@ def merge_row(existing, new):
     existing["num_emails"] = new["num_emails"]
     existing["num_sent"] = new["num_sent"]
     existing["num_received"] = new["num_received"]
+    existing["num_cc"] = new.get("num_cc", 0)
     existing["first_interaction"] = _merge_date(
         existing["first_interaction"], new["first_interaction"], newest=False)
     existing["last_interaction"] = _merge_date(
@@ -384,7 +388,7 @@ def _native_cells(r):
             r["first_name"], r.get("title", ""), r["company"],
             r.get("phone", ""), r.get("address", ""), r["primary_email"],
             " ".join(r["emails"]), r["num_emails"], r["num_sent"],
-            r["num_received"], r["first_interaction"] or "",
+            r["num_received"], r.get("num_cc", 0), r["first_interaction"] or "",
             r["last_interaction"] or "", r.get("source", "")]
 
 
@@ -604,21 +608,32 @@ def matches(contact, crit):
     return True
 
 
+def load_domain_files(paths, label):
+    """Load and union one or more domain-list files into a single set.
+
+    Exits with an error if any path is missing or the union is empty.
+    """
+    domains = set()
+    for path in paths:
+        if not os.path.isfile(path):
+            sys.exit("error: %s not found: %s" % (label, path))
+        domains |= load_domain_list(path)
+    if not domains:
+        sys.exit("error: %s file(s) contain no domains: %s"
+                 % (label, ", ".join(paths)))
+    return domains
+
+
 def load_domain_filters(args):
     """Load --whitelist / --blacklist into domain sets (None when not given).
 
-    Exits with an error if a given file is missing or contains no domains.
+    Each flag takes a list of files whose domains are unioned together.
     """
-    def load(path, label):
-        if not os.path.isfile(path):
-            sys.exit("error: %s not found: %s" % (label, path))
-        domains = load_domain_list(path)
-        if not domains:
-            sys.exit("error: %s %s contains no domains" % (label, path))
-        return domains
-
-    whitelist = load(args.whitelist, "whitelist") if getattr(args, "whitelist", None) else None
-    blacklist = load(args.blacklist, "blacklist") if getattr(args, "blacklist", None) else None
+    whitelist = blacklist = None
+    if getattr(args, "whitelist", None):
+        whitelist = load_domain_files(args.whitelist, "whitelist")
+    if getattr(args, "blacklist", None):
+        blacklist = load_domain_files(args.blacklist, "blacklist")
     return whitelist, blacklist
 
 
@@ -771,10 +786,12 @@ def _normalize_dt(dt):
     return dt
 
 
-def _ingest_message(msg, recs, self_set):
+def _ingest_message(msg, recs, self_set, include_cc=False):
     """Fold one normalized message into `recs`/`self_set`.
 
-    Returns False if the message was skipped (spam), True otherwise.
+    Returns False if the message was skipped (spam), True otherwise. When
+    `include_cc` is set, the other To/Cc recipients of mail I received (people on
+    a thread with me, not the sender) are also recorded, counted as `num_cc`.
     """
     if msg["is_spam"]:
         return False
@@ -785,28 +802,36 @@ def _ingest_message(msg, recs, self_set):
     from_emails = [addr.lower() for _, addr in msg["from"] if addr]
     sent_by_me = msg["is_sent"] or any(a in self_set for a in from_emails)
     dt = msg["date"]
+    # Each group is (pairs, count-attr, signature-phones-to-credit).
     if sent_by_me:
         for a in from_emails:        # learn self addresses
             self_set.add(a)
-        pairs, attr = msg["to"], "num_sent"
-        phones = []                  # never trust our own signature
+        groups = [(msg["to"], "num_sent", [])]   # never trust our own signature
     else:
-        pairs, attr = msg["from"], "num_recv"
         phones = _extract_phones(msg.get("body", ""))
+        groups = [(msg["from"], "num_recv", phones)]
+        if include_cc:
+            # Co-recipients on mail I received: the To/Cc minus the sender (the
+            # sender is already credited as num_recv above). No signature phone.
+            seen = set(from_emails)
+            cc_pairs = [(n, a) for (n, a) in msg["to"]
+                        if (a or "").lower().strip() not in seen]
+            groups.append((cc_pairs, "num_cc", []))
 
-    for raw_name, addr in pairs:
-        addr = (addr or "").lower().strip()
-        if not addr or "@" not in addr or addr in self_set:
-            continue
-        r = recs[addr]
-        r.emails[addr] += 1
-        nm = dec(raw_name).strip()
-        if nm and "@" not in nm:
-            r.names[nm] += 1
-        for ph in phones:            # signature phones (received mail only)
-            r.phones[ph] += 1
-        setattr(r, attr, getattr(r, attr) + 1)
-        r.touch(dt)
+    for pairs, attr, phones in groups:
+        for raw_name, addr in pairs:
+            addr = (addr or "").lower().strip()
+            if not addr or "@" not in addr or addr in self_set:
+                continue
+            r = recs[addr]
+            r.emails[addr] += 1
+            nm = dec(raw_name).strip()
+            if nm and "@" not in nm:
+                r.names[nm] += 1
+            for ph in phones:        # signature phones (received mail only)
+                r.phones[ph] += 1
+            setattr(r, attr, getattr(r, attr) + 1)
+            r.touch(dt)
     return True
 
 
@@ -1177,6 +1202,7 @@ def _merge_group(rows):
         "num_emails": sum(r["num_emails"] for r in rows),
         "num_sent": sum(r["num_sent"] for r in rows),
         "num_received": sum(r["num_received"] for r in rows),
+        "num_cc": sum(r.get("num_cc", 0) for r in rows),
         "first_interaction": first,
         "last_interaction": last,
         "source": source,
@@ -1499,9 +1525,7 @@ def cmd_import(args, ifmt, ofmt):
     pst = ifmt == "pst"
     blacklist = set()
     if args.blacklist:
-        if not os.path.isfile(args.blacklist):
-            sys.exit("error: blacklist not found: %s" % args.blacklist)
-        blacklist = load_domain_list(args.blacklist)
+        blacklist = load_domain_files(args.blacklist, "blacklist")
 
     recs = defaultdict(Rec)  # primary email -> Rec
     n_msgs = 0
@@ -1511,7 +1535,8 @@ def cmd_import(args, ifmt, ofmt):
     src = iter_pst_messages(path) if pst else iter_mbox_messages(path)
     for msg in src:
         n_msgs += 1
-        if not _ingest_message(msg, recs, self_set):
+        if not _ingest_message(msg, recs, self_set,
+                               include_cc=getattr(args, "include_cc", False)):
             n_skip_spam += 1
         if n_msgs % 50000 == 0:
             sys.stderr.write(f"  parsed {n_msgs:,} messages\n")
@@ -1566,6 +1591,7 @@ def cmd_import(args, ifmt, ofmt):
                 merged.phones[ph] += c
             merged.num_sent += r.num_sent
             merged.num_recv += r.num_recv
+            merged.num_cc += r.num_cc
             merged.touch(r.first)
             merged.touch(r.last)
         # primary email = most-used address
@@ -1582,9 +1608,10 @@ def cmd_import(args, ifmt, ofmt):
             "primary_email": primary,
             "emails": sorted(merged.emails, key=lambda e: -merged.emails[e]),
             "display_name": display,
-            "num_emails": merged.num_sent + merged.num_recv,
+            "num_emails": merged.num_sent + merged.num_recv + merged.num_cc,
             "num_sent": merged.num_sent,
             "num_received": merged.num_recv,
+            "num_cc": merged.num_cc,
             "first_interaction": merged.first.date().isoformat() if merged.first else None,
             "last_interaction": merged.last.date().isoformat() if merged.last else None,
         }
@@ -1595,13 +1622,13 @@ def cmd_import(args, ifmt, ofmt):
         people.append(build([addr]))
 
     # ---- final contact filters: full name + corresponded in either direction
-    # Keep anyone you sent to OR received from. (Every recorded contact already
-    # has at least one sent or received message, so the guard documents the
-    # rule rather than dropping anyone today.)
+    # Keep anyone you sent to OR received from (OR were on a thread with, when
+    # --include-cc harvested To/Cc co-recipients).
     n_built = len(people)
     people = [p for p in people if p["first_name"] and p["last_name"]]
     n_after_name = len(people)
-    people = [p for p in people if p["num_sent"] > 0 or p["num_received"] > 0]
+    people = [p for p in people
+              if p["num_sent"] > 0 or p["num_received"] > 0 or p.get("num_cc", 0) > 0]
     n_kept = len(people)
     sys.stderr.write(
         f"Contacts: {n_built:,} built -> {n_after_name:,} with full name "
@@ -1738,14 +1765,22 @@ def parse_args(argv=None):
                    metavar="BYTES",
                    help="--llm: cap each message body to BYTES (default 262144; "
                         "0 = unlimited) so attachment blobs do not dominate")
+    p.add_argument("--include-cc", dest="include_cc", action="store_true",
+                   help="when importing a mailbox, also harvest the other To/Cc "
+                        "recipients of mail you received (people on a thread with "
+                        "you, not just the sender), counted as num_cc")
     p.add_argument("--whitelist", dest="whitelist", metavar="PATH",
+                   nargs="+", action="extend",
                    help="keep only contacts whose email domain matches an entry "
-                        "in this file (one domain per line; '#' comments and "
-                        "blank lines ignored; subdomains match too)")
+                        "in these files (one domain per line; '#' comments and "
+                        "blank lines ignored; subdomains match too). Accepts "
+                        "multiple files (unioned) and may be repeated.")
     p.add_argument("--blacklist", dest="blacklist", metavar="PATH",
+                   nargs="+", action="extend",
                    help="drop contacts/addresses whose email domain matches an "
-                        "entry in this file (one per line; '#' comments and "
-                        "blank lines ignored; subdomains match too)")
+                        "entry in these files (one per line; '#' comments and "
+                        "blank lines ignored; subdomains match too). Accepts "
+                        "multiple files (unioned) and may be repeated.")
     # Export filters (apply when the operation resolves to an export).
     p.add_argument("--type", dest="type",
                    help="match contact type against any of LIST (%s)"
