@@ -1159,9 +1159,12 @@ def _read_existing_contacts(path, fmt):
 
 
 def _contact_sort_key(r):
-    """Display order: named companies first, then by volume, then by name."""
-    return (r["company"] == "", r["company"].lower(), -r["num_emails"],
-            r["last_name"].lower(), r["first_name"].lower())
+    """Display order: by last name, then first name, then email. Keying on stable
+    identity fields (not volatile counts/company) keeps a contact in the same
+    place across re-imports, so git diffs of the JSON DB stay small. The email is
+    a tiebreaker so same-name contacts have a deterministic, total order."""
+    return (r["last_name"].lower(), r["first_name"].lower(),
+            (r.get("primary_email") or "").lower())
 
 
 def _fold_into(existing, new_rows, force=False):
@@ -1493,6 +1496,20 @@ def _pick_primary(record):
     return emails[0]
 
 
+# Control chars that are illegal in .xlsx cells / break single-line fields:
+# everything below 0x20 except none (tab/newline/CR are folded to space too,
+# since contact fields are single-line).
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _scrub_controls(value):
+    """Replace ASCII control chars with spaces and collapse runs of whitespace.
+    Leaves non-string values untouched."""
+    if not isinstance(value, str):
+        return value
+    return re.sub(r"\s+", " ", _CONTROL_CHARS_RE.sub(" ", value)).strip()
+
+
 def _normalize_name(name):
     """Trim/collapse whitespace; Title-case tokens that are all-upper or
     all-lower, leaving mixed-case names (McX, O'Brien, van) untouched."""
@@ -1519,7 +1536,14 @@ def _normalize_phone(phone, region=DEFAULT_REGION):
     return phone
 
 
-def _reconcile_merge(group):
+def _record_label(r):
+    """A short human label for a record, for action logs."""
+    name = ((r.get("first_name") or "") + " " + (r.get("last_name") or "")).strip()
+    return (r.get("primary_email") or "").strip() or name or \
+        (next(iter(r.get("emails") or []), "") or "<no-id>")
+
+
+def _reconcile_merge(group, log=None):
     """Merge a group of duplicate records into one. company/title come from a
     LinkedIn-sourced member if any; other fields from the newest-interaction
     member (fallback import_date); emails/sources union, counts sum, dates widen."""
@@ -1527,6 +1551,7 @@ def _reconcile_merge(group):
         return dict(group[0])
     base = max(group, key=lambda r: (r.get("last_interaction") or "",
                                      r.get("import_date") or ""))
+    base_snapshot = dict(base)
     merged = dict(base)
 
     def first_nonblank(field):
@@ -1564,10 +1589,16 @@ def _reconcile_merge(group):
     merged["linkedin"] = next(
         (r["linkedin"] for r in group if str(r.get("linkedin") or "").strip()), "")
     merged["import_date"] = max((r.get("import_date") or "") for r in group)
+    if log:
+        kept = _record_label(base_snapshot)
+        for f in sorted(set(base_snapshot) | set(merged)):
+            old, new = base_snapshot.get(f), merged.get(f)
+            if old != new:
+                log("  modify %s.%s: %r -> %r" % (kept, f, old, new))
     return merged
 
 
-def _merge_by_shared_email(rows):
+def _merge_by_shared_email(rows, log=None):
     """Union-find merge of records that share a mergeable (personal) email."""
     parent = list(range(len(rows)))
 
@@ -1589,10 +1620,16 @@ def _merge_by_shared_email(rows):
     groups = defaultdict(list)
     for i in range(len(rows)):
         groups[find(i)].append(rows[i])
-    return [_reconcile_merge(g) for g in groups.values()]
+    out = []
+    for g in groups.values():
+        if log and len(g) > 1:
+            log("merge by email: %s -> %s"
+                % (", ".join(_record_label(r) for r in g), _record_label(g[0])))
+        out.append(_reconcile_merge(g, log))
+    return out
 
 
-def _merge_by_name(rows):
+def _merge_by_name(rows, log=None):
     """Merge records sharing a lowercased (first, last) name (the name-merge
     pass, using reconcile's single-winner merge)."""
     groups, order, passthrough = {}, [], []
@@ -1607,16 +1644,23 @@ def _merge_by_name(rows):
             groups[key] = []
             order.append(key)
         groups[key].append(r)
-    out = [_reconcile_merge(groups[k]) for k in order]
+    out = []
+    for k in order:
+        g = groups[k]
+        if log and len(g) > 1:
+            log("merge by name: %s -> %s"
+                % (", ".join(_record_label(r) for r in g), _record_label(g[0])))
+        out.append(_reconcile_merge(g, log))
     out.extend(passthrough)
     return out
 
 
-def reconcile_contacts(rows):
+def reconcile_contacts(rows, log=None):
     """Clean and merge a contacts DB: drop junk addresses, merge duplicates by
     shared email and by name, recompute derived fields, pick the best primary
     email, and normalize names/phones. Records left with no email and no LinkedIn
-    URL are dropped. Returns sorted rows."""
+    URL are dropped. Returns sorted rows. If `log` is given, it is called with a
+    one-line message for every action taken."""
     rows = [dict(r) for r in rows]
     # 1. drop junk addresses; re-point primary if it was dropped
     for r in rows:
@@ -1627,24 +1671,64 @@ def reconcile_contacts(rows):
                     and not is_bot(el) and not _is_role_address(el)):
                 seen.add(el)
                 deduped.append(el)
+            elif log and el:
+                why = ("duplicate" if el in seen else "invalid"
+                       if not _valid_email(el) else "bot" if is_bot(el)
+                       else "role/generic")
+                log("drop email: %s from %s (%s)"
+                    % (el, _record_label(r), why))
         r["emails"] = deduped
         pe = (r.get("primary_email") or "").lower()
-        r["primary_email"] = pe if pe in seen else (deduped[0] if deduped else "")
+        new_pe = pe if pe in seen else (deduped[0] if deduped else "")
+        if log and new_pe != pe:
+            log("primary email: %s -> %s (%s)"
+                % (pe or "<none>", new_pe or "<none>", _record_label(r)))
+        r["primary_email"] = new_pe
     # 2. merge by shared personal email, then 3. by name
-    rows = _merge_by_shared_email(rows)
-    rows = _merge_by_name(rows)
+    rows = _merge_by_shared_email(rows, log)
+    rows = _merge_by_name(rows, log)
     # 4-7. per-record cleanup
     out = []
     for r in rows:
+        # strip stray control chars (NUL, VT, embedded newlines) from every
+        # string field so single-line text and .xlsx export stay clean
+        for k, v in list(r.items()):
+            if isinstance(v, str):
+                cleaned = _scrub_controls(v)
+                if log and cleaned != v:
+                    log("scrub control chars: %s.%s -> %r"
+                        % (_record_label(r), k, cleaned))
+                r[k] = cleaned
+            elif isinstance(v, list):
+                r[k] = [_scrub_controls(x) if isinstance(x, str) else x for x in v]
         r["num_emails"] = int(r.get("num_sent") or 0) + int(r.get("num_received") or 0)
         if not str(r.get("company") or "").strip() and r.get("primary_email"):
             r["company"] = company_from(r["primary_email"])
+            if log and str(r["company"]).strip():
+                log("fill company: %s = %s"
+                    % (_record_label(r), r["company"]))
+        old_pe = r.get("primary_email") or ""
         r["primary_email"] = _pick_primary(r)
-        r["first_name"] = _normalize_name(r.get("first_name", ""))
-        r["last_name"] = _normalize_name(r.get("last_name", ""))
-        r["phone"] = _normalize_phone(r.get("phone", ""))
+        if log and r["primary_email"] != old_pe:
+            log("pick primary: %s -> %s (%s)"
+                % (old_pe or "<none>", r["primary_email"] or "<none>",
+                   _record_label(r)))
+        for fld in ("first_name", "last_name"):
+            old = r.get(fld, "")
+            new = _normalize_name(old)
+            if log and new != old:
+                log("normalize %s: %r -> %r (%s)"
+                    % (fld, old, new, _record_label(r)))
+            r[fld] = new
+        old_ph = r.get("phone", "")
+        r["phone"] = _normalize_phone(old_ph)
+        if log and r["phone"] != old_ph:
+            log("normalize phone: %r -> %r (%s)"
+                % (old_ph, r["phone"], _record_label(r)))
         if r.get("primary_email") or str(r.get("linkedin") or "").strip():
             out.append(r)
+        elif log:
+            log("drop record: %s (no email and no linkedin)" % _record_label(r))
     out.sort(key=_contact_sort_key)
     return out
 
@@ -2124,7 +2208,9 @@ def cmd_db(args, ofmt):
     rows = list(existing.values())
     n_folded = len(rows)
     if args.reconcile:
-        rows = reconcile_contacts(rows)
+        rlog = (lambda m: sys.stderr.write("  reconcile: " + m + "\n")) \
+            if getattr(args, "verbose", False) else None
+        rows = reconcile_contacts(rows, log=rlog)
         extra = " then reconciled"
     else:
         extra = ""
@@ -2190,6 +2276,9 @@ def parse_args(argv=None):
                    help="clean and merge records (json -> json): drop junk/role "
                         "addresses, merge duplicates by email and by name, "
                         "recompute fields, and pick the best primary email")
+    p.add_argument("-v", "--verbose", action="store_true",
+                   help="with --reconcile, print every action taken (drops, "
+                        "merges, field changes) to stderr")
     p.add_argument("--force", action="store_true",
                    help="when an imported record overlaps an existing one, "
                         "overwrite the existing text fields (company, title, "
