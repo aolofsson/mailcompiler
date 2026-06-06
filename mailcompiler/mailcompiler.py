@@ -35,7 +35,7 @@ import json
 import os
 import re
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, timezone
 from email.parser import HeaderParser, Parser
 from email.header import decode_header, make_header
@@ -1666,6 +1666,30 @@ def _norm_company(name):
     return re.sub(r"[^a-z0-9]", "", (name or "").lower())
 
 
+# Legal-entity suffix tokens stripped (only when trailing) when comparing
+# company names, so "Synopsys" / "Synopsys Inc" / "Synopsys, Inc." cluster.
+_LEGAL_SUFFIXES = {
+    "inc", "incorporated", "corp", "corporation", "co", "company", "llc",
+    "llp", "lp", "ltd", "limited", "plc", "gmbh", "ag", "sa", "sas", "srl",
+    "spa", "bv", "nv", "oy", "ab", "as", "kk", "pte", "pvt", "pty",
+}
+
+
+def _company_core(name):
+    """Normalized comparison key for a company name: lowercased, parentheticals
+    and punctuation dropped, trailing legal-entity suffixes removed. Variants
+    that differ only by legal suffix / punctuation / casing share a core
+    ("Synopsys, Inc." -> "synopsys"); genuinely different names do not, so this
+    never merges distinct companies or abbreviations (Analog vs Analog Devices
+    stay separate)."""
+    s = re.sub(r"\(.*?\)", " ", (name or "").lower())   # drop (parentheticals)
+    s = re.sub(r"[^\w\s&-]", " ", s, flags=re.UNICODE)  # drop punctuation
+    toks = s.split()
+    while toks and toks[-1] in _LEGAL_SUFFIXES:
+        toks.pop()
+    return " ".join(toks).strip()
+
+
 def _pick_primary(record):
     """Pick the primary email: prefer one whose domain maps to the record's
     company, else keep the current primary if still present, else emails[0]."""
@@ -1955,8 +1979,35 @@ def reconcile_contacts(rows, log=None):
                 log("drop record: %s (no email and no linkedin)" % _record_label(r))
         else:
             out.append(r)
+    _canonicalize_companies(out, log)
     out.sort(key=_contact_sort_key)
     return out
+
+
+def _canonicalize_companies(rows, log=None):
+    """Collapse company-name spelling variants in place: names sharing a
+    _company_core (legal suffix / punctuation / casing differences) are unified
+    to one surface form -- the most frequent, then shortest (so the clean,
+    suffix-free spelling wins). Distinct companies and abbreviations keep
+    separate cores and are left untouched."""
+    clusters = defaultdict(Counter)
+    for r in rows:
+        c = (r.get("company") or "").strip()
+        if c:
+            clusters[_company_core(c)][c] += 1
+    canonical = {}
+    for core, surfaces in clusters.items():
+        if core:
+            canonical[core] = min(surfaces, key=lambda s: (-surfaces[s], len(s)))
+    for r in rows:
+        c = (r.get("company") or "").strip()
+        if not c:
+            continue
+        canon = canonical.get(_company_core(c))
+        if canon and canon != c:
+            if log:
+                log("canon company: %s: %r -> %r" % (_record_label(r), c, canon))
+            r["company"] = canon
 
 
 # ---- vCard export -----------------------------------------------------------
