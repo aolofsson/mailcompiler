@@ -32,6 +32,16 @@ source .venv/bin/activate
 pip install -e .
 ```
 
+## Workflow
+
+1. Convert email archive (.mbox, .pst) into a JSON file
+  mc -i "All mail Including Spam and Trash.mbox" -o contacts.json
+2. Translate JSON file to an xlsx spreadsheet
+  mc -i contacts.json -o contacts.xlsx
+3. Edit/annotate/wrangle/fix contact spreadsheet
+4. Merge changes into golden contact database
+  mc -i contacts.xlsx -o contacts.json
+
 ## Examples
 
 Build the JSON contacts database from a Gmail Takeout mbox:
