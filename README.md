@@ -1,22 +1,24 @@
 ![MailCompiler](docs/postverket.svg)
 
-MailCompiler is a simple Python program for: importing data from an email archives (.mbox and .pst) into into a human readable local JSON file/databsae and for converting between different contact file formats (VCARD, CSV).
+Turn your email archive into a contact list you own. MailCompiler imports your
+`.mbox`/`.pst` into a clean, human-readable JSON database and converts between
+vCard and CSV.
 
 ## Motivation
-- You need to own your data!
-- Manually scraping inboxes to put together outreach lists is a waste of life
-- CRMs are over engineered for startups
-- Email client import/output is barely functional
-- Email client search functions are completely broken
+- It's getting increasinly more important to own and protect your data!
+- Manually scraping inboxes to put together outreach lists is a waste of life.
+- Email client search functiosn are completely useless.
+- Email client import/output is are different shades of broken.
 
 ## Key features
 - Clean human readable JSON contact database
 - Fast import from Gmail Takeout `.mbox` and Outlook `.pst` (handles 20 GB+)
 - Import/export support for VCARD (3.0) and CSV (Outlook) contact lists
+- Lossless import/export between xls/csv files and JSON database
 - Streaming .mbox into LLM friendly JSON corpus
 - Automatic extraction of email conversations into contacts
 - Automatic extraction of phone numbers from email signatures
-- Incremental non-destructive merging of multiple JSON databases
+- Incremental non-destructive merging of into a JSON database
 - Deduplication of records
 - Black list email list support
 - Automatic filtering of bot farm email addresses
@@ -30,22 +32,68 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-## MC Email Utility
+## MC Program
 
 The MailCompiler command line utility is called 'mc'
 
-`mc` has no subcommands: the operation is inferred from the `-i`/`-o` file
-formats (taken from the extension, or forced with `--iformat`/`--oformat`). A
-mailbox, vCard, or Outlook CSV input **imports** into a contacts database; a
-JSON database input **exports** (to `.csv`/`.vcf`) or, with `--dedup`,
-**deduplicates** (to `.json`). JSON is the native database; CSV and vCard are
-interchange formats.
-
 ```
+mc -h                                        print out command line help
 mc -i MBOX|PST|VCF|CSV -o DB.json [...]      import contacts into a JSON DB
 mc -i DB.json -o OUT.{csv,vcf} [filters]     export matching records
 mc -i DB.json -o OUT.json --dedup            merge same-name contacts
 ```
+
+## Examples
+
+Build the JSON contacts database from a Gmail Takeout mbox:
+
+    mc -i "All mail Including Spam and Trash.mbox" -o data/contacts.json
+
+Import an Outlook PST instead:
+
+    mc -i archive.pst -o data/contacts.json
+
+Import a vCard export (Google Contacts / Gmail):
+
+    mc -i contacts.vcf -o data/contacts.json
+
+Import an Outlook / Google Contacts CSV export (`--iformat outlook`):
+
+    mc -i contacts.csv --iformat outlook -o data/contacts.json
+
+Merge a new import into an existing DB, preserving manual edits:
+
+    mc -i archive.pst -o data/contacts.json --merge
+
+Exclude whole domains while importing:
+
+    mc -i archive.pst -o data/contacts.json --blacklist blacklist.txt
+
+Dump a per-email JSONL corpus for an LLM (no contacts DB):
+
+    mc -i mailbox.mbox -o emails.jsonl --llm
+
+Export filtered contacts to a vCard:
+
+    mc -i data/contacts.json --type customer,investor -o leads.vcf
+
+Export filtered contacts to CSV:
+
+    mc -i data/contacts.json --company Intel,AMD --min-emails 5 -o intel_amd.csv
+
+Export in Outlook's CSV column layout (`--oformat outlook`):
+
+    mc -i data/contacts.json -o outlook.csv --oformat outlook
+
+Deduplicate contacts sharing a first+last name, rewriting in place:
+
+    mc -i data/contacts.json -o data/contacts.json --dedup
+
+Merge one database into another (folding `extra.json` into `data/contacts.json`):
+
+    mc -i extra.json -o data/contacts.json --merge
+
+
 
 ## Database Record
 
@@ -98,55 +146,6 @@ re-imports and merges (see [Merge vs overwrite](#merge-vs-overwrite)). The same
 fields are the columns of the CSV export, and map to the corresponding vCard
 properties on export.
 
-## Examples
-
-Build the contacts DB from a Gmail Takeout mbox:
-
-    mc -i "All mail Including Spam and Trash.mbox" -o data/contacts.json
-
-Import an Outlook PST instead:
-
-    mc -i archive.pst -o data/contacts.json
-
-Import a vCard export (Google Contacts / Gmail):
-
-    mc -i contacts.vcf -o data/contacts.json
-
-Import an Outlook / Google Contacts CSV export (`--iformat outlook`):
-
-    mc -i contacts.csv --iformat outlook -o data/contacts.json
-
-Merge a new import into an existing DB, preserving manual edits:
-
-    mc -i archive.pst -o data/contacts.json --merge
-
-Exclude whole domains while importing:
-
-    mc -i archive.pst -o data/contacts.json --blacklist blacklist.txt
-
-Dump a per-email JSONL corpus for an LLM (no contacts DB):
-
-    mc -i mailbox.mbox -o emails.jsonl --llm
-
-Export filtered contacts to a vCard:
-
-    mc -i data/contacts.json --type customer,investor -o leads.vcf
-
-Export filtered contacts to CSV:
-
-    mc -i data/contacts.json --company Intel,AMD --min-emails 5 -o intel_amd.csv
-
-Export in Outlook's CSV column layout (`--oformat outlook`):
-
-    mc -i data/contacts.json -o outlook.csv --oformat outlook
-
-Deduplicate contacts sharing a first+last name, rewriting in place:
-
-    mc -i data/contacts.json -o data/contacts.json --dedup
-
-Merge one database into another (folding `extra.json` into `data/contacts.json`):
-
-    mc -i extra.json -o data/contacts.json --merge
 
 ## Building the contacts database
 
