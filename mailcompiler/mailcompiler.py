@@ -174,35 +174,200 @@ def clean(tok):
     return tok.strip(" '\"().,-")
 
 
+# --- semantic name parsing ---------------------------------------------------
+# Nobiliary/patronymic particles that belong to the surname rather than being
+# dropped as a middle token: "Ludwig van Beethoven" -> last "van Beethoven".
+_SURNAME_PARTICLES = {
+    "van", "von", "vander", "vanden", "de", "del", "della", "des", "der",
+    "den", "ter", "ten", "da", "das", "dos", "di", "du", "la", "le", "lo",
+    "el", "al", "bin", "ibn", "abu", "mac", "mc", "st", "san", "santa",
+}
+# Generational/honorific suffixes that are never a surname.
+_NAME_SUFFIXES = {
+    "jr", "jnr", "sr", "snr", "ii", "iii", "iv", "phd", "md", "esq", "mba",
+    "jd", "dds", "dvm", "cpa", "msc",
+}
+# Honorific prefixes/titles dropped from the front of a display name.
+_NAME_PREFIXES = {
+    "mr", "mrs", "ms", "mx", "miss", "dr", "prof", "professor", "sir", "rev",
+    "capt", "col", "lt", "sgt", "gen", "maj", "hon",
+}
+
+
+def _norm_affix(tok):
+    """Lowercase alpha-only form of a token, for affix/particle matching
+    ("Jr." -> "jr", "St." -> "st")."""
+    return re.sub(r'[^a-z]', '', (tok or "").lower())
+
+
+def _strip_name_affixes(parts):
+    """Drop honorific prefixes from the front and generational/honorific
+    suffixes from the end of a tokenized name (never down to empty)."""
+    toks = list(parts)
+    while len(toks) > 1 and _norm_affix(toks[0]) in _NAME_PREFIXES:
+        toks.pop(0)
+    while len(toks) > 1 and _norm_affix(toks[-1]) in _NAME_SUFFIXES:
+        toks.pop()
+    return toks
+
+
+def _split_surname(parts):
+    """Given name tokens (prefixes/suffixes already stripped), return
+    (first, last). The surname is the final token plus any immediately preceding
+    nobiliary particles (van/de/der/...); middle tokens are dropped."""
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return parts[0], ""
+    i = len(parts) - 1                      # surname starts at the last token
+    while i - 1 >= 1 and _norm_affix(parts[i - 1]) in _SURNAME_PARTICLES:
+        i -= 1
+    return parts[0], " ".join(parts[i:])
+
+
+def _cap_name_word(w):
+    """Title-case one name word, normalizing each hyphen segment and apostrophe
+    part independently: all-upper/all-lower atoms get an initial cap (with a
+    leading 'Mc' capping the next letter -> McDonald), while already-mixed-case
+    atoms (DeShawn, MacLeod) are left untouched."""
+    def cap_atom(a):
+        if not a:
+            return a
+        if "'" in a:                        # O'Brien, D'Angelo
+            x, _, y = a.partition("'")
+            return cap_atom(x) + "'" + cap_atom(y)
+        if not (a.isupper() or a.islower()):
+            return a                        # intentional mixed case
+        s = a[:1].upper() + a[1:].lower()
+        if len(s) > 2 and s[:2] == "Mc":
+            s = "Mc" + s[2].upper() + s[3:]
+        return s
+    return "-".join(cap_atom(p) for p in (w or "").split("-"))
+
+
+# Trailing affiliation/role markers seen in structured org addresses (chiefly
+# US DoD: first.mi.last.civ@mail.mil, ...last.ctr@..., ...last.mil@...). They
+# are never a surname and are stripped when recovering a name from a local-part.
+_ROLE_NAME_TOKENS = {"civ", "ctr", "mil", "contr", "contractor", "mtr"}
+
+# Tokens that are never a real surname: role markers plus military/agency
+# acronyms. A last name equal to one of these (or a bracketed/garbage token) is
+# treated as junk to be recovered from the email or dropped.
+_JUNK_SURNAME_TOKENS = _ROLE_NAME_TOKENS | {
+    "usa", "usn", "usaf", "usmc", "uscg", "usarmy", "navy", "army", "af",
+    "afmc", "afrl", "dod", "dla", "hq", "us", "gov", "mail",
+}
+
+
+def _email_name_tokens(email_addr):
+    """Human-looking tokens from an email local-part (alpha, optional trailing
+    digits, <=20 chars): "anders.a.persson" -> ['anders', 'persson'] (the bare
+    'a' initial is dropped)."""
+    local = (email_addr or "").split("@")[0]
+    return [t for t in re.split(r'[._\-+]+', local)
+            if re.fullmatch(r'[A-Za-z]{2,}\d*', t) and len(t) <= 20]
+
+
+def _cap_surname(tok):
+    """Capitalize a surname token, preserving hyphenated/Mc compounds
+    (mccants -> McCants, allen-mccormack -> Allen-McCormack)."""
+    return " ".join(_cap_name_word(p) for p in (tok or "").split())
+
+
+def _is_weak_surname(last):
+    """True when a last name is not a usable surname: blank, a single-letter
+    initial, a bracketed/garbage token (e.g. "[us]"), or a role/agency marker
+    (civ, afmc, navy, ...). Hyphens, apostrophes, periods and spaces are allowed
+    so real names (O'Brien, Allen-Mccormack, St. John) are not flagged."""
+    s = (last or "").strip()
+    alpha = re.sub(r'[^A-Za-z]', '', s)
+    if len(alpha) <= 1:
+        return True
+    if re.search(r"[^A-Za-z .'-]", s):
+        return True
+    return alpha.lower() in _JUNK_SURNAME_TOKENS
+
+
+def recover_surname_from_email(first, last, email_addr):
+    """Repair a weak/junk surname using the email local-part.
+
+    A blank, initial-only, bracketed, or role/agency last name (see
+    _is_weak_surname) is not a real surname -- the real one is often hiding in
+    the email (display "Anders A" for anders.a.persson@..., or last "Civ" for
+    alan.j.davis.civ@us.navy.mil). When the local-part's leading token matches
+    the first name, the remaining tokens are treated as the name: middle
+    initials, bare numbers, trailing digit suffixes (joyce4 -> joyce) and
+    affiliation markers (civ/ctr/mil) are dropped. The surname is recovered ONLY
+    when exactly one name token then remains, so personal addresses yield a name
+    (-> "Davis") while structured org/role addresses with several leftover
+    tokens recover nothing (paul.civ.usaf.afmc.afrl@...).
+
+    Returns: the original last name if it is already a real surname; the
+    recovered surname when one is found; otherwise "" (blank) so a junk surname
+    is dropped rather than kept."""
+    if not _is_weak_surname(last):
+        return last
+    # split on dot/underscore/plus; keep hyphens so compound surnames survive
+    raw = [t for t in re.split(r'[._+]+', (email_addr or "").split("@")[0]) if t]
+    ftok = (first or "").strip().split()
+    if raw and ftok and raw[0].lower() == ftok[0].lower():
+        surname_toks = []
+        for t in raw[1:]:
+            core = re.sub(r'\d+$', '', t)          # strip trailing digits
+            alpha = re.sub(r'[^A-Za-z]', '', core)
+            if len(alpha) <= 1 or core.lower() in _ROLE_NAME_TOKENS:
+                continue                           # initial / number / role
+            surname_toks.append(core)
+        if (len(surname_toks) == 1 and surname_toks[0].lower() != ftok[0].lower()
+                and surname_toks[0].lower() not in _JUNK_SURNAME_TOKENS):
+            return _cap_surname(surname_toks[0])
+    # weak and unrecoverable: blank it so the both-names rule drops the record
+    return ""
+
+
 def split_name(display, email_addr):
-    """Return (first, last) from a display name, with email fallback."""
+    """Return a normalized (first, last) from a display name, with email
+    fallback. Applies the semantic name rules: honorific prefix/suffix stripping
+    (Dr/Jr/PhD), nobiliary-particle surnames (van der Berg), org/department tag
+    removal ("[US]", "(contr-diro)", "Name/dept/SUPEX"), and surname recovery /
+    cross-validation from the email local-part for weak names."""
     name = (display or "").strip().strip('"\'').strip()
-    # Cut org/department/handle suffixes leaked into the display name, e.g.
-    # "Seo (Ethan)/dept/SUPEX" or "Name <tag>" -> keep the leading human part.
-    name = re.split(r'\s*[(/\\<|]', name)[0].strip().rstrip(").-").strip()
+    # Remove balanced bracket/paren tags anywhere ("[US]", "[US-US]",
+    # "(contr-diro)", "(MS)") -- "Mathews (US), Phil" -> "Mathews , Phil".
+    name = re.sub(r'[\[(][^\])]*[\])]', ' ', name)
+    # Cut department/handle tails after a slash/angle/pipe, e.g.
+    # "Seo/dept/SUPEX" or "Name <tag>" -> keep the leading human part.
+    name = re.split(r'\s*[/\\<|]', name)[0].strip().rstrip(").-").strip()
     # No usable display name: synthesize from the email local-part, but only
     # from human-looking tokens (alpha, optional trailing digits, <=20 chars).
     # This recovers "eric.wallace.4" -> Eric Wallace while rejecting hash/unsub
     # local-parts like "8a795fa6-038a-4166-...".
     if not name or ("@" in name and " " not in name):
-        local = email_addr.split("@")[0]
-        toks = [t for t in re.split(r'[._\-+]+', local)
-                if re.fullmatch(r'[A-Za-z]{2,}\d*', t) and len(t) <= 20]
-        if len(toks) >= 2:
-            return toks[0].capitalize(), toks[-1].capitalize()
-        if len(toks) == 1:
-            return toks[0].capitalize(), ""
-        return "", ""
-    if "," in name:  # "Last, First"
-        last, _, first = name.partition(",")
-        ftok = clean(first).split()
-        return (ftok[0].capitalize() if ftok else ""), clean(last).capitalize()
-    parts = clean(name).split()
-    if not parts:                 # name was only punctuation (e.g. ".", "()")
-        return "", ""
-    if len(parts) == 1:
-        return parts[0], ""
-    return parts[0], parts[-1]
+        toks = _email_name_tokens(email_addr)
+        if not toks:
+            return "", ""
+        first = toks[0].capitalize()
+        last = recover_surname_from_email(first, "", email_addr)
+        return _normalize_name(first), _normalize_name(last)
+    if "," in name:
+        last_part, _, first_part = name.partition(",")
+        first_raw = clean(first_part).split()
+        # "First Last, Jr." (only a suffix after the comma) is NOT "Last, First"
+        if first_raw and all(_norm_affix(t) in _NAME_SUFFIXES for t in first_raw):
+            parts = _strip_name_affixes(clean(last_part).split() + first_raw)
+            first, last = _split_surname(parts)
+        else:                                   # "Last, First [Middle]"
+            last_toks = _strip_name_affixes(clean(last_part).split())
+            first_toks = _strip_name_affixes(first_raw)
+            first = first_toks[0] if first_toks else ""
+            last = " ".join(last_toks)
+    else:
+        parts = _strip_name_affixes(clean(name).split())
+        if not parts:             # name was only punctuation (e.g. ".", "()")
+            return "", ""
+        first, last = _split_surname(parts)
+    last = recover_surname_from_email(first, last, email_addr)
+    return _normalize_name(first), _normalize_name(last)
 
 
 def company_from(email_addr):
@@ -1511,12 +1676,17 @@ def _scrub_controls(value):
 
 
 def _normalize_name(name):
-    """Trim/collapse whitespace; Title-case tokens that are all-upper or
-    all-lower, leaving mixed-case names (McX, O'Brien, van) untouched."""
+    """Trim/collapse whitespace and fix casing of all-upper/all-lower tokens
+    (handling hyphens, apostrophes and Mc-), leaving already-mixed-case names
+    (McX, O'Brien, DeShawn) untouched. Surname particles (van, de, der, ...) are
+    forced lowercase except in leading position."""
+    toks = [t for t in re.sub(r"\s+", " ", (name or "").strip()).split(" ") if t]
     out = []
-    for tok in re.sub(r"\s+", " ", (name or "").strip()).split(" "):
-        out.append(tok.capitalize() if tok and (tok.isupper() or tok.islower())
-                   else tok)
+    for i, tok in enumerate(toks):
+        if i > 0 and _norm_affix(tok) in _SURNAME_PARTICLES:
+            out.append(tok.lower())
+        else:
+            out.append(_cap_name_word(tok))
     return " ".join(out).strip()
 
 
@@ -1658,9 +1828,9 @@ def _merge_by_name(rows, log=None):
 def reconcile_contacts(rows, log=None):
     """Clean and merge a contacts DB: drop junk addresses, merge duplicates by
     shared email and by name, recompute derived fields, pick the best primary
-    email, and normalize names/phones. Records left with no email and no LinkedIn
-    URL are dropped. Returns sorted rows. If `log` is given, it is called with a
-    one-line message for every action taken."""
+    email, and normalize names/phones. Records missing a first or last name, or
+    with no email and no LinkedIn URL, are dropped. Returns sorted rows. If `log`
+    is given, it is called with a one-line message for every action taken."""
     rows = [dict(r) for r in rows]
     # 1. drop junk addresses; re-point primary if it was dropped
     for r in rows:
@@ -1725,10 +1895,29 @@ def reconcile_contacts(rows, log=None):
         if log and r["phone"] != old_ph:
             log("normalize phone: %r -> %r (%s)"
                 % (old_ph, r["phone"], _record_label(r)))
-        if r.get("primary_email") or str(r.get("linkedin") or "").strip():
+        # recover a missing/initial-only surname from a personal email local-part
+        # (e.g. blank or "A" -> "Persson" from anders.a.persson@...)
+        old_ln = r.get("last_name", "")
+        new_ln = recover_surname_from_email(
+            r.get("first_name", ""), old_ln, r.get("primary_email", ""))
+        if new_ln != old_ln:
+            if log:
+                log("recover surname: %s last %r -> %r (from email)"
+                    % (_record_label(r), old_ln, new_ln))
+            r["last_name"] = new_ln
+        has_name = (str(r.get("first_name") or "").strip()
+                    and str(r.get("last_name") or "").strip())
+        has_contact = (r.get("primary_email")
+                       or str(r.get("linkedin") or "").strip())
+        if not has_name:
+            if log:
+                log("drop record: %s (missing first or last name)"
+                    % _record_label(r))
+        elif not has_contact:
+            if log:
+                log("drop record: %s (no email and no linkedin)" % _record_label(r))
+        else:
             out.append(r)
-        elif log:
-            log("drop record: %s (no email and no linkedin)" % _record_label(r))
     out.sort(key=_contact_sort_key)
     return out
 
