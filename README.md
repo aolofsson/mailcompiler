@@ -24,6 +24,20 @@ vCard and CSV.
 - Automatic filtering of bot farm email addresses
 - Record filtering on export
 
+## TL;DR
+
+```bash
+pip install -e .                                   # install the `mc` command
+mc -i takeout.mbox -o contacts.json                # mailbox -> contacts DB
+mc -i contacts.json -o contacts.xlsx               # edit in Excel, then...
+mc -i contacts.xlsx -o contacts.json               # ...lossless round-trip back
+mc -i contacts.json --type customer -o leads.vcf   # filter + export (csv/xlsx/vcf)
+```
+
+There's one command, `mc`, and one JSON database. `mc` infers the operation from
+the `-i`/`-o` file extensions: a mailbox/vCard/CSV/XLSX in **imports**; a JSON DB
+in **exports** (or `--dedup`/`--merge`). The rest of this README is the details.
+
 ## Installation
 
 ```bash
@@ -88,9 +102,10 @@ Export filtered contacts to CSV:
 
     mc -i data/contacts.json --company Intel,AMD --min-emails 5 -o intel_amd.csv
 
-Export in Outlook's CSV column layout (`--oformat outlook`):
+Export in Outlook's column layout, as CSV or XLSX (`--oformat outlook`):
 
     mc -i data/contacts.json -o outlook.csv --oformat outlook
+    mc -i data/contacts.json -o outlook.xlsx --oformat outlook
 
 Deduplicate contacts sharing a first+last name, rewriting in place:
 
@@ -231,10 +246,12 @@ mc -i "/path/to/contacts.vcf" -o data/contacts.json   # vCard (e.g. a Gmail expo
 ```
 
 `-i` and `-o` are required. The output format follows the `-o` extension:
-`.json` is the native database, `.csv` writes the full-column CSV, and `.vcf`
-writes a vCard. To import an **Outlook-format CSV** (the column layout Outlook
-and Google Contacts export) pass `--iformat outlook`, since a bare `.csv` is
-read as the native CSV layout:
+`.json`, `.csv`, and `.xlsx` are the interchangeable native database formats
+(same columns, lossless round-trip -- edit the DB in Excel and re-import it), and
+`.vcf` writes a vCard. Excel support is `.xlsx` only (via openpyxl); the legacy
+binary `.xls` is not supported. To read an **Outlook-format CSV/XLSX** (the
+column layout Outlook and Google Contacts export) pass `--iformat outlook`, since
+a bare `.csv`/`.xlsx` is read as the native layout:
 
     mc -i contacts.csv --iformat outlook -o data/contacts.json
 
