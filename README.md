@@ -28,10 +28,13 @@ vCard and CSV.
 
 ```bash
 pip install -e .                                   # install the `mc` command
-mc -i takeout.mbox -o contacts.json                # mailbox -> contacts DB
-mc -i contacts.json -o contacts.xlsx               # edit in Excel, then...
-mc -i contacts.xlsx -o contacts.json               # ...lossless round-trip back
-mc -i contacts.json --type customer -o leads.vcf   # filter + export (csv/xlsx/vcf)
+mc -i takeout.mbox -o contacts.json                # create initial database
+mc -i archive.pst -o contacts.json                 # merge in pst archive
+mc -i all.vcard -o contacts.json                   # merge in vcard
+mc -i outlook.csv -iformat csv -o contacts.json    # merge in outlook csv
+mc -i l.csv -iformat linked -o contacts.json       # merge in linkedin export
+mc -dedup -i contacts.json -o contacts.json        # remove duplicates
+mc -reconsile -i contacts.json -o contacts.json    # clean/reconsile records
 ```
 
 There's one command, `mc`, and one JSON database. `mc` infers the operation from
@@ -59,14 +62,11 @@ pip install -e .
 
 ## Examples
 
-Build the JSON contacts database from a Gmail Takeout mbox:
+Build the JSON contacts database from a Gmail Takeout mbox (this also brings in
+the other To/Cc recipients of mail you received -- people on a thread with you,
+not just senders):
 
     mc -i "All mail Including Spam and Trash.mbox" -o data/contacts.json
-
-Also harvest the other To/Cc recipients of mail you received (people on a
-thread with you, not just the sender), counted as `num_cc`:
-
-    mc -i "All mail Including Spam and Trash.mbox" -o data/contacts.json --include-cc
 
 Direct extraction from Takeout mbox to an xlsx spreadsheet:
 
@@ -144,7 +144,7 @@ Merge one database into another (folding `extra.json` into `data/contacts.json`)
 usage: mc [-h] -i INPUT -o OUTPUT
           [--iformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}]
           [--oformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}] [--dedup]
-          [--force] [--llm] [--max-body BYTES] [--include-cc] [--whitelist PATH [PATH ...]]
+          [--force] [--llm] [--max-body BYTES] [--whitelist PATH [PATH ...]]
           [--blacklist PATH [PATH ...]] [--type TYPE] [--company COMPANY]
           [--first-name FIRST_NAME] [--last-name LAST_NAME]
           [--email-domain EMAIL_DOMAIN] [--min-emails MIN_EMAILS]
@@ -176,9 +176,6 @@ options:
                         mbox/PST instead of building the DB
   --max-body BYTES      --llm: cap each message body to BYTES (default 262144; 0 =
                         unlimited) so attachment blobs do not dominate
-  --include-cc          when importing a mailbox, also harvest the other To/Cc
-                        recipients of mail you received (people on a thread with you,
-                        not just the sender), counted as num_cc
   --whitelist PATH [PATH ...]
                         keep only contacts whose email domain matches an entry in these
                         files (one domain per line; '#' comments and blank lines ignored;
@@ -239,7 +236,6 @@ fields, in this order:
   "num_emails": 50,
   "num_sent": 30,
   "num_received": 20,
-  "num_cc": 0,
   "first_interaction": "2023-01-01",
   "last_interaction": "2025-03-15",
   "source": "work.mbox | takeout.mbox",
@@ -260,10 +256,9 @@ fields, in this order:
 | `address` | string | Annotation you fill in; set from a vCard `ADR`/`LABEL`, otherwise blank. |
 | `primary_email` | string | The most-used address; the record's key. |
 | `emails` | string[] | All known addresses for the person, primary first. |
-| `num_emails` | integer | Total messages involving this contact (`num_sent` + `num_received` + `num_cc`). |
+| `num_emails` | integer | Total direct messages exchanged (`num_sent` + `num_received`). 0 for a contact you only shared a thread with. |
 | `num_sent` | integer | Messages you sent to this contact. |
 | `num_received` | integer | Messages received from this contact. |
-| `num_cc` | integer | Messages where they were a To/Cc co-recipient on a thread with you (0 unless imported with `--include-cc`). |
 | `first_interaction` | string\|null | Earliest interaction date (`YYYY-MM-DD`), or `null` if unknown. |
 | `last_interaction` | string\|null | Latest interaction date (`YYYY-MM-DD`), or `null` if unknown. |
 | `source` | string | Origin file(s) the record came from, joined by ` \| `. |
@@ -318,11 +313,13 @@ A row is created for each **person you have corresponded with** -- anyone you
 sent mail to or who sent mail to you. Specifically, an address is imported only
 if **all** of these hold:
 
-- It is a recipient (`To`/`Cc`) of mail you sent, **or** the sender (`From`) of
-  mail you received (either direction qualifies). For PST, "sent" mail is the
-  **Sent Items** folder. With `--include-cc`, the *other* `To`/`Cc` recipients of
-  mail you received also qualify (people on a thread with you, counted as
-  `num_cc`) -- broader reach, but noisier (large CC lists, mailing lists).
+- It appeared on a message with you: a recipient (`To`/`Cc`) of mail you sent
+  (counts as `num_sent`), the sender (`From`) of mail you received (`num_received`),
+  **or** one of the *other* `To`/`Cc` recipients of mail you received -- people on
+  a thread with you, even if you never corresponded directly (these count 0
+  sent/received). For PST, "sent" mail is the **Sent Items** folder. (Including
+  thread co-recipients gives broad reach but is noisier -- large CC lists,
+  mailing lists -- which the bot/no-reply/blacklist filters below help trim.)
 - The message is **not** spam: the Gmail `Spam` label, or for PST the **Junk
   Email** folder, is skipped.
 - It is **not one of your own addresses** (auto-detected from the mbox
@@ -386,8 +383,8 @@ existing one is read, merged into, and written back. There is no separate
 "overwrite the whole file" mode: to start over, delete the file (or point `-o` at
 a new path).
 
-For an existing contact, the counts (`num_emails`, `num_sent`, `num_received`,
-`num_cc`) are overwritten with the latest import, the email list is unioned, the
+For an existing contact, the counts (`num_emails`, `num_sent`, `num_received`)
+are overwritten with the latest import, the email list is unioned, the
 interaction date range widens, and `import_date` updates. Hand-edited text fields
 (`type`/`friend`/`title`/`address`, plus name/company/phone) are **preserved** by
 default -- the import only fills a blank. Pass **`--force`** to let the incoming
@@ -521,7 +518,7 @@ mc -i data/contacts.json -o deduped.json --dedup          # or to a new file
 
 When duplicates are merged:
 
-- counts (`num_emails`/`num_sent`/`num_received`/`num_cc`) are **summed**, `emails`
+- counts (`num_emails`/`num_sent`/`num_received`) are **summed**, `emails`
   and `source` are **unioned**, and the interaction date range **widens**;
 - conflicting annotation fields (`type`, `friend`, `title`, `company`, `phone`,
   `address`) are **kept all** (distinct values joined with ` | `), so no manual
