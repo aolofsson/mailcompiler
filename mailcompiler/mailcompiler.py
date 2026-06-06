@@ -292,10 +292,13 @@ def load_rows(path):
     """
     if not os.path.isfile(path):
         return []
-    if path.lower().endswith(".json"):
+    low = path.lower()
+    if low.endswith(".json"):
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
         records = data if isinstance(data, list) else []
+    elif low.endswith(".xlsx"):
+        records = _read_xlsx(path)
     else:
         with open(path, "r", encoding="utf-8", newline="") as fh:
             records = list(csv.DictReader(fh))
@@ -349,19 +352,22 @@ def _write_atomic(path, write_fn):
     os.replace(tmp, path)
 
 
+def _native_cells(r):
+    """Row cells for the native full-column layout, in CSV_FIELDS order."""
+    return [r.get("type", ""), r.get("friend", ""), r["last_name"],
+            r["first_name"], r.get("title", ""), r["company"],
+            r.get("phone", ""), r.get("address", ""), r["primary_email"],
+            " ".join(r["emails"]), r["num_emails"], r["num_sent"],
+            r["num_received"], r["first_interaction"] or "",
+            r["last_interaction"] or "", r.get("source", "")]
+
+
 def write_csv_rows(path, rows):
     def _w(out):
         w = csv.writer(out)
         w.writerow(CSV_FIELDS)
         for r in rows:
-            w.writerow([
-                r.get("type", ""), r.get("friend", ""), r["last_name"],
-                r["first_name"], r.get("title", ""), r["company"],
-                r.get("phone", ""), r.get("address", ""), r["primary_email"],
-                " ".join(r["emails"]), r["num_emails"], r["num_sent"],
-                r["num_received"], r["first_interaction"] or "",
-                r["last_interaction"] or "", r.get("source", ""),
-            ])
+            w.writerow(_native_cells(r))
     _write_atomic(path, _w)
 
 
@@ -374,11 +380,89 @@ def write_json_rows(path, rows):
     _write_atomic(path, _w)
 
 
+# ---- xlsx backend (openpyxl) ------------------------------------------------
+def _write_xlsx(path, header, rows_cells):
+    """Write a single-sheet .xlsx with a header row + one row per record."""
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(list(header))
+    for cells in rows_cells:
+        ws.append(list(cells))
+    tmp = path + ".tmp"
+    wb.save(tmp)
+    os.replace(tmp, path)
+
+
+def _read_xlsx(path):
+    """Read the first sheet of an .xlsx into a list of {header: str} dicts."""
+    import openpyxl
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        rows_iter = wb.active.iter_rows(values_only=True)
+        try:
+            header = [("" if h is None else str(h)).strip() for h in next(rows_iter)]
+        except StopIteration:
+            return []
+        out = []
+        for row in rows_iter:
+            d = {h: ("" if v is None else str(v))
+                 for h, v in zip(header, row) if h}
+            out.append(d)
+        return out
+    finally:
+        wb.close()
+
+
+def write_xlsx_rows(path, rows):
+    """Write contacts in the native full-column layout as .xlsx."""
+    _write_xlsx(path, CSV_FIELDS, (_native_cells(r) for r in rows))
+
+
 # ---- Outlook CSV layout -----------------------------------------------------
 # Microsoft Outlook's CSV import/export header names (the subset we map).
 OUTLOOK_FIELDS = ["First Name", "Last Name", "Job Title", "Company",
                   "E-mail Address", "E-mail 2 Address", "E-mail 3 Address",
                   "Business Phone", "Business Street"]
+
+
+def _outlook_cells(r):
+    """Row cells for the Outlook layout (first three emails only)."""
+    emails = r.get("emails") or []
+    primary = r.get("primary_email") or ""
+    ordered = ([primary] if primary else [])
+    ordered += [e for e in emails if e and e != primary]
+    e1, e2, e3 = (ordered + ["", "", ""])[:3]
+    return [r.get("first_name", ""), r.get("last_name", ""),
+            r.get("title", ""), r.get("company", ""),
+            e1, e2, e3, r.get("phone", ""), r.get("address", "")]
+
+
+def _outlook_row_from_dict(raw, source):
+    """Map one Outlook header->value dict to a contact row (or None if empty)."""
+    r = {(k or "").strip().lower(): (v or "").strip() for k, v in raw.items()}
+    emails = [r.get(h, "") for h in
+              ("e-mail address", "e-mail 2 address", "e-mail 3 address")]
+    emails = [e for e in emails if e]
+    addr = ", ".join(p for p in (
+        r.get("business street", ""), r.get("business city", ""),
+        r.get("business state", ""), r.get("business postal code", ""),
+        r.get("business country", "")) if p)
+    phone = r.get("business phone", "") or r.get("mobile phone", "")
+    row = _normalize_row({
+        "first_name": r.get("first name", ""),
+        "last_name": r.get("last name", ""),
+        "title": r.get("job title", ""),
+        "company": r.get("company", ""),
+        "phone": phone,
+        "address": addr,
+        "primary_email": emails[0] if emails else "",
+        "emails": emails,
+        "source": source,
+    })
+    if row["primary_email"] or row["first_name"] or row["last_name"]:
+        return row
+    return None
 
 
 def write_outlook_csv(path, rows):
@@ -388,15 +472,13 @@ def write_outlook_csv(path, rows):
         w = csv.writer(out)
         w.writerow(OUTLOOK_FIELDS)
         for r in rows:
-            emails = r.get("emails") or []
-            primary = r.get("primary_email") or ""
-            ordered = ([primary] if primary else [])
-            ordered += [e for e in emails if e and e != primary]
-            e1, e2, e3 = (ordered + ["", "", ""])[:3]
-            w.writerow([r.get("first_name", ""), r.get("last_name", ""),
-                        r.get("title", ""), r.get("company", ""),
-                        e1, e2, e3, r.get("phone", ""), r.get("address", "")])
+            w.writerow(_outlook_cells(r))
     _write_atomic(path, _w)
+
+
+def write_outlook_xlsx(path, rows):
+    """Write contacts in Outlook's column layout as .xlsx."""
+    _write_xlsx(path, OUTLOOK_FIELDS, (_outlook_cells(r) for r in rows))
 
 
 def parse_outlook_csv(path):
@@ -405,29 +487,20 @@ def parse_outlook_csv(path):
     rows = []
     with open(path, "r", encoding="utf-8-sig", newline="") as fh:
         for raw in csv.DictReader(fh):
-            r = {(k or "").strip().lower(): (v or "").strip()
-                 for k, v in raw.items()}
-            emails = [r.get(h, "") for h in
-                      ("e-mail address", "e-mail 2 address", "e-mail 3 address")]
-            emails = [e for e in emails if e]
-            addr = ", ".join(p for p in (
-                r.get("business street", ""), r.get("business city", ""),
-                r.get("business state", ""), r.get("business postal code", ""),
-                r.get("business country", "")) if p)
-            phone = r.get("business phone", "") or r.get("mobile phone", "")
-            row = _normalize_row({
-                "first_name": r.get("first name", ""),
-                "last_name": r.get("last name", ""),
-                "title": r.get("job title", ""),
-                "company": r.get("company", ""),
-                "phone": phone,
-                "address": addr,
-                "primary_email": emails[0] if emails else "",
-                "emails": emails,
-                "source": source,
-            })
-            if row["primary_email"] or row["first_name"] or row["last_name"]:
+            row = _outlook_row_from_dict(raw, source)
+            if row:
                 rows.append(row)
+    return rows
+
+
+def parse_outlook_xlsx(path):
+    """Parse an Outlook-layout .xlsx into contact row dicts."""
+    source = os.path.basename(path)
+    rows = []
+    for raw in _read_xlsx(path):
+        row = _outlook_row_from_dict(raw, source)
+        if row:
+            rows.append(row)
     return rows
 
 
@@ -867,7 +940,7 @@ def _is_noreply(pairs):
 
 
 # Canonical extension appended to a bare -o name lacking one, per format.
-_FMT_EXT = {"json": ".json", "csv": ".csv", "outlook": ".csv",
+_FMT_EXT = {"json": ".json", "csv": ".csv", "xlsx": ".xlsx", "outlook": ".csv",
             "vcard": ".vcf", "jsonl": ".jsonl"}
 
 
@@ -883,11 +956,16 @@ def _resolve_out(path, fmt):
 
 
 def write_contacts_as(path, rows, fmt):
-    """Write contact rows in the given output format (json/csv/outlook/vcard)."""
+    """Write contact rows in the given output format. The native full-column
+    layout is json/csv/xlsx; outlook uses the Outlook column layout (.csv or
+    .xlsx by extension); vcard is a vCard file."""
     if fmt == "vcard":
         write_vcards(path, rows)
     elif fmt == "outlook":
-        write_outlook_csv(path, rows)
+        (write_outlook_xlsx if path.lower().endswith(".xlsx")
+         else write_outlook_csv)(path, rows)
+    elif fmt == "xlsx":
+        write_xlsx_rows(path, rows)
     elif fmt == "csv":
         write_csv_rows(path, rows)
     else:  # json
@@ -902,8 +980,9 @@ def _read_existing_contacts(path, fmt):
     if fmt == "vcard":
         rows = parse_vcards(path)
     elif fmt == "outlook":
-        rows = parse_outlook_csv(path)
-    else:  # json or native csv
+        rows = (parse_outlook_xlsx if path.lower().endswith(".xlsx")
+                else parse_outlook_csv)(path)
+    else:  # json / native csv / native xlsx
         rows = load_rows(path)
     return {r["primary_email"].lower(): r for r in rows if r.get("primary_email")}
 
@@ -1299,9 +1378,10 @@ def cmd_import(args, ifmt, ofmt):
     if not os.path.isfile(path):
         sys.exit("error: input not found: %s" % path)
 
-    # Outlook CSV: read the Outlook column layout straight into contact rows.
+    # Outlook CSV/XLSX: read the Outlook column layout straight into rows.
     if ifmt == "outlook":
-        new_rows = parse_outlook_csv(path)
+        new_rows = (parse_outlook_xlsx if path.lower().endswith(".xlsx")
+                    else parse_outlook_csv)(path)
         sys.stderr.write(
             f"Parsed {len(new_rows):,} contacts from {os.path.basename(path)}.\n")
         _merge_and_write(args, new_rows, ofmt)
@@ -1432,7 +1512,7 @@ def cmd_import(args, ifmt, ofmt):
 
 
 def cmd_export(args, ofmt):
-    """Export matching contact records as CSV, Outlook CSV, or vCard."""
+    """Export matching records as CSV/XLSX, Outlook CSV/XLSX, or vCard."""
     if args.type:
         bad = [t for t in (_csv_set(args.type) or set()) if t not in TYPE_VALUES]
         if bad:
@@ -1451,13 +1531,14 @@ def cmd_export(args, ofmt):
         f"Exported {len(selected):,}/{len(contacts):,} contacts to {out}\n")
 
 
-def cmd_db(args):
-    """Operate on a JSON contacts DB (json -> json): copy through, and/or
-    --merge the input into the existing output DB, and/or --dedup the result."""
+def cmd_db(args, ofmt):
+    """Operate on a native contacts DB (json/csv/xlsx -> json/csv/xlsx): convert
+    or copy through, and/or --merge the input into the existing output DB, and/or
+    --dedup the result."""
     rows = load_rows(args.input)
     if not rows:
         sys.exit("error: no contacts found in %s" % args.input)
-    out_path = _resolve_out(args.output, "json")
+    out_path = _resolve_out(args.output, ofmt)
     outdir = os.path.dirname(out_path)
     if outdir:
         os.makedirs(outdir, exist_ok=True)
@@ -1466,14 +1547,14 @@ def cmd_db(args):
     n_existing = n_new = 0
     if args.merge:
         # Fold the input DB into the existing output DB as a batch.
-        existing = _read_existing_contacts(out_path, "json")
+        existing = _read_existing_contacts(out_path, ofmt)
         n_existing = len(existing)
         n_new, _ = _fold_into(existing, rows)
         rows = list(existing.values())
     if args.dedup:
         rows = dedup_contacts(rows)
     rows = sorted(rows, key=_contact_sort_key)
-    write_json_rows(out_path, rows)
+    write_contacts_as(out_path, rows, ofmt)
 
     if args.merge:
         extra = " then deduped" if args.dedup else ""
@@ -1491,12 +1572,15 @@ def cmd_db(args):
 
 # Recognized file formats. JSON is the native database; the rest are import
 # sources / export targets. "outlook" is the Outlook/Google CSV column layout.
-FORMATS = ["json", "csv", "outlook", "vcard", "mbox", "pst", "jsonl"]
+FORMATS = ["json", "csv", "xlsx", "outlook", "vcard", "mbox", "pst", "jsonl"]
 
 # How a file's format is inferred from its extension (unless --iformat/--oformat
-# overrides it). A .csv defaults to native CSV; "outlook" must be asked for.
-_EXT_FORMAT = {".json": "json", ".csv": "csv", ".vcf": "vcard", ".vcd": "vcard",
+# overrides it). .csv/.xlsx default to the native layout; "outlook" must be asked
+# for. json/csv/xlsx are the interchangeable native database formats.
+_EXT_FORMAT = {".json": "json", ".csv": "csv", ".xlsx": "xlsx",
+               ".vcf": "vcard", ".vcd": "vcard",
                ".mbox": "mbox", ".pst": "pst", ".jsonl": "jsonl"}
+DB_FORMATS = ("json", "csv", "xlsx")
 
 
 def resolve_format(path, override):
@@ -1599,26 +1683,21 @@ def main(argv=None):
                      "an import; import to .json first, then dedup")
         return cmd_import(args, ifmt, ofmt)
 
-    # JSON contacts DB input.
-    if ifmt == "json":
+    # Native contacts DB input (json/csv/xlsx -- interchangeable layouts).
+    if ifmt in DB_FORMATS:
+        if ofmt == "jsonl":
+            sys.exit("error: a .jsonl corpus is produced only with --llm")
+        # --merge/--dedup are database operations: write a native DB format.
+        if args.merge or args.dedup:
+            if ofmt not in DB_FORMATS:
+                sys.exit("error: --merge/--dedup produce a native database; "
+                         "-o must be .json/.csv/.xlsx (not %s)" % ofmt)
+            return cmd_db(args, ofmt)
+        # No DB op: convert/copy to a native DB (json), or filtered export.
         if ofmt == "json":
-            # copy through, --merge another DB in, and/or --dedup the result
-            return cmd_db(args)
-        if ofmt in ("csv", "outlook", "vcard"):
-            if args.merge:
-                sys.exit("error: --merge produces a JSON DB; drop --merge to "
-                         "export, or use a .json output to merge databases")
-            if args.dedup:
-                sys.exit("error: --dedup only applies to a json -> json output; "
-                         "dedup to .json first, then export")
-            return cmd_export(args, ofmt)
-        sys.exit("error: cannot write %s from a JSON contacts DB" % ofmt)
+            return cmd_db(args, ofmt)
+        return cmd_export(args, ofmt)   # csv/xlsx/outlook/vcard, with filters
 
-    # Native CSV input: not a database we can dedup or export.
-    if ifmt == "csv":
-        sys.exit("error: CSV is not a contacts-database format. To import an "
-                 "Outlook/Google CSV pass --iformat outlook (-> a .json DB); "
-                 "to export or deduplicate, use a JSON DB as input.")
     sys.exit("error: unsupported input format: %s" % ifmt)
 
 

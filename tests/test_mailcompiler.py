@@ -16,6 +16,8 @@ from mailcompiler.mailcompiler import (
     _vcard_escape, _vcard_fold, _contact_vcard, write_vcards,
     _vcard_unescape, parse_vcards,
     OUTLOOK_FIELDS, write_outlook_csv, parse_outlook_csv,
+    write_xlsx_rows, write_outlook_xlsx, parse_outlook_xlsx,
+    _write_xlsx, _read_xlsx,
 )
 
 
@@ -194,7 +196,7 @@ class TestRoundTrip:
     def _roundtrip(self, ext):
         fd, path = tempfile.mkstemp(suffix=ext)
         os.close(fd)
-        fmt = "json" if ext == ".json" else "csv"
+        fmt = {".json": "json", ".csv": "csv", ".xlsx": "xlsx"}[ext]
         try:
             write_contacts_as(path, self.ROWS, fmt)
             back = load_rows(path)
@@ -216,6 +218,18 @@ class TestRoundTrip:
         assert r["num_sent"] == 2 and r["num_received"] == 1
         assert r["type"] == "customer" and r["source"] == "a.mbox | b.mbox"
         assert r["last_interaction"] == "2024-05-05"
+
+    def test_xlsx_roundtrip(self):
+        back = self._roundtrip(".xlsx")
+        r = back[0]
+        assert r["emails"] == ["jordan@globex.com", "jordan.vale@globex.com"]
+        assert r["num_sent"] == 2 and r["num_received"] == 1
+        assert r["type"] == "customer" and r["source"] == "a.mbox | b.mbox"
+
+    def test_json_csv_xlsx_all_equal(self):
+        # The three native formats carry identical information.
+        assert self._roundtrip(".json") == self._roundtrip(".csv") \
+            == self._roundtrip(".xlsx")
 
 
 def _msg(frm=None, to=None, is_sent=False, is_spam=False, self_hints=None,
@@ -663,3 +677,48 @@ class TestOutlookCsv:
         assert b["emails"] == ["jane@acme.com", "jane@gmail.com"]
         assert b["address"] == "1 Main St"
         assert b["type"] == "" and b["num_emails"] == 0   # not carried by Outlook
+
+
+class TestXlsx:
+    def test_write_read_roundtrip(self):
+        header = ["A", "B", "C"]
+        rows = [["1", "x,y", ""], ["2", "z", "q"]]
+        path = _write_tmp("", ".xlsx")
+        try:
+            _write_xlsx(path, header, rows)
+            back = _read_xlsx(path)
+        finally:
+            os.remove(path)
+        assert back == [{"A": "1", "B": "x,y", "C": ""},
+                        {"A": "2", "B": "z", "C": "q"}]
+
+    def test_native_xlsx_load(self):
+        rows = [_row("Jane", "Roe", "Acme", primary="jane@acme.com",
+                     emails=["jane@acme.com", "j2@acme.com"], n_emails=5)]
+        path = _write_tmp("", ".xlsx")
+        try:
+            write_xlsx_rows(path, rows)
+            back = load_rows(path)
+        finally:
+            os.remove(path)
+        r = back[0]
+        assert (r["first_name"], r["last_name"]) == ("Jane", "Roe")
+        assert r["emails"] == ["jane@acme.com", "j2@acme.com"]
+        assert r["num_emails"] == 5
+
+    def test_outlook_xlsx_roundtrip(self):
+        rows = [_row("Alex", "Smith", "Acme", "+15550199", "customer",
+                     "alex@acme.com", ["alex@acme.com", "alex2@acme.com"],
+                     title="AE", address="123 Business Rd")]
+        path = _write_tmp("", ".xlsx")
+        try:
+            write_outlook_xlsx(path, rows)
+            back = parse_outlook_xlsx(path)
+        finally:
+            os.remove(path)
+        b = back[0]
+        assert (b["first_name"], b["last_name"]) == ("Alex", "Smith")
+        assert b["company"] == "Acme" and b["title"] == "AE"
+        assert b["phone"] == "+15550199"
+        assert b["emails"] == ["alex@acme.com", "alex2@acme.com"]
+        assert b["address"] == "123 Business Rd"
