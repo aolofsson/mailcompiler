@@ -35,6 +35,7 @@ mc -i outlook.csv -iformat csv -o contacts.json    # merge in outlook csv
 mc -i l.csv -iformat linked -o contacts.json       # merge in linkedin export
 mc -dedup -i contacts.json -o contacts.json        # remove duplicates
 mc -reconsile -i contacts.json -o contacts.json    # clean/reconsile records
+mc -i contacts.json -o contacts.xlsx               # export to excel
 ```
 
 There's one command, `mc`, and one JSON database. `mc` infers the operation from
