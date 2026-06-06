@@ -26,3 +26,7 @@ env/
 
 # Logs and scratch output
 *.log
+
+#  Mail archives
+*.mbox
+*.pst
