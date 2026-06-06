@@ -1429,6 +1429,226 @@ def dedup_contacts(rows):
     return merged
 
 
+# ---- reconcile (clean + cross-source merge) ---------------------------------
+# Shared/generic mailbox local-parts: different people may all list these, so
+# they are never used as a cross-record identity key, and are dropped as junk.
+ROLE_LOCALPARTS = {
+    "no-reply", "noreply", "no_reply", "donotreply", "do-not-reply",
+    "info", "sales", "support", "admin", "administrator", "postmaster",
+    "hello", "contact", "help", "office", "team", "marketing", "billing",
+    "accounts", "accounting", "hr", "jobs", "careers", "press", "media",
+    "webmaster", "abuse", "security", "privacy", "legal", "feedback",
+    "newsletter", "news", "notifications", "notification", "service",
+    "services", "enquiries", "inquiries", "mail", "email", "noreply-",
+}
+
+
+def _valid_email(addr):
+    """Loose validity check: exactly one @, non-empty local, dotted domain."""
+    addr = (addr or "").strip().lower()
+    if addr.count("@") != 1 or " " in addr or "," in addr:
+        return False
+    local, dom = addr.split("@")
+    return bool(local) and "." in dom and not dom.startswith(".") \
+        and not dom.endswith(".")
+
+
+def _is_role_address(addr):
+    """True for shared/generic mailboxes (info@, sales@, no-reply@, ...)."""
+    base = (addr or "").split("@", 1)[0].lower().strip().split("+", 1)[0]
+    return base in ROLE_LOCALPARTS
+
+
+def _is_free(addr):
+    return (addr or "").split("@")[-1].lower() in FREE_PROVIDERS
+
+
+def _mergeable_address(addr):
+    """A valid, personal address usable as a cross-record identity key (not a
+    free-provider, role/generic, or bot mailbox that different people may share)."""
+    return (_valid_email(addr) and not _is_free(addr)
+            and not _is_role_address(addr) and not is_bot(addr))
+
+
+def _norm_company(name):
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+
+def _pick_primary(record):
+    """Pick the primary email: prefer one whose domain maps to the record's
+    company, else keep the current primary if still present, else emails[0]."""
+    emails = record.get("emails") or []
+    if not emails:
+        return record.get("primary_email", "") or ""
+    company = _norm_company(record.get("company", ""))
+    if company:
+        for e in emails:
+            cf = _norm_company(company_from(e))
+            if cf and (cf == company
+                       or (len(cf) >= 4 and (cf in company or company in cf))):
+                return e
+    cur = record.get("primary_email") or ""
+    if cur.lower() in (e.lower() for e in emails):
+        return cur
+    return emails[0]
+
+
+def _normalize_name(name):
+    """Trim/collapse whitespace; Title-case tokens that are all-upper or
+    all-lower, leaving mixed-case names (McX, O'Brien, van) untouched."""
+    out = []
+    for tok in re.sub(r"\s+", " ", (name or "").strip()).split(" "):
+        out.append(tok.capitalize() if tok and (tok.isupper() or tok.islower())
+                   else tok)
+    return " ".join(out).strip()
+
+
+def _normalize_phone(phone, region=DEFAULT_REGION):
+    """Normalize a stored phone to +E.164 if it parses to a valid number;
+    otherwise leave it unchanged (do not discard data we cannot parse)."""
+    phone = (phone or "").strip()
+    if not phone:
+        return ""
+    try:
+        num = phonenumbers.parse(phone, region)
+        if phonenumbers.is_valid_number(num):
+            return phonenumbers.format_number(
+                num, phonenumbers.PhoneNumberFormat.E164)
+    except Exception:
+        pass
+    return phone
+
+
+def _reconcile_merge(group):
+    """Merge a group of duplicate records into one. company/title come from a
+    LinkedIn-sourced member if any; other fields from the newest-interaction
+    member (fallback import_date); emails/sources union, counts sum, dates widen."""
+    if len(group) == 1:
+        return dict(group[0])
+    base = max(group, key=lambda r: (r.get("last_interaction") or "",
+                                     r.get("import_date") or ""))
+    merged = dict(base)
+
+    def first_nonblank(field):
+        return next((r[field] for r in group if str(r.get(field) or "").strip()),
+                    merged.get(field, ""))
+
+    li = next((r for r in group if str(r.get("linkedin") or "").strip()), None)
+    for f in ("company", "title"):
+        if li and str(li.get(f) or "").strip():
+            merged[f] = li[f]
+        elif not str(merged.get(f) or "").strip():
+            merged[f] = first_nonblank(f)
+    for f in ("first_name", "last_name", "phone", "address", "type", "friend"):
+        if not str(merged.get(f) or "").strip():
+            merged[f] = first_nonblank(f)
+
+    emails = []
+    for r in [base] + list(group):
+        for e in [r.get("primary_email", "")] + list(r.get("emails") or []):
+            e = (e or "").strip()
+            if e and e.lower() not in (x.lower() for x in emails):
+                emails.append(e)
+    merged["emails"] = emails
+    merged["num_sent"] = sum(int(r.get("num_sent") or 0) for r in group)
+    merged["num_received"] = sum(int(r.get("num_received") or 0) for r in group)
+    merged["num_emails"] = merged["num_sent"] + merged["num_received"]
+    fi = [r.get("first_interaction") for r in group if r.get("first_interaction")]
+    la = [r.get("last_interaction") for r in group if r.get("last_interaction")]
+    merged["first_interaction"] = min(fi) if fi else None
+    merged["last_interaction"] = max(la) if la else None
+    src = ""
+    for r in group:
+        src = _union_sources(src, r.get("source", "") or "")
+    merged["source"] = src
+    merged["linkedin"] = next(
+        (r["linkedin"] for r in group if str(r.get("linkedin") or "").strip()), "")
+    merged["import_date"] = max((r.get("import_date") or "") for r in group)
+    return merged
+
+
+def _merge_by_shared_email(rows):
+    """Union-find merge of records that share a mergeable (personal) email."""
+    parent = list(range(len(rows)))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    seen = {}
+    for i, r in enumerate(rows):
+        for e in r.get("emails") or []:
+            if _mergeable_address(e):
+                el = e.lower()
+                if el in seen:
+                    parent[find(i)] = find(seen[el])
+                else:
+                    seen[el] = i
+    groups = defaultdict(list)
+    for i in range(len(rows)):
+        groups[find(i)].append(rows[i])
+    return [_reconcile_merge(g) for g in groups.values()]
+
+
+def _merge_by_name(rows):
+    """Merge records sharing a lowercased (first, last) name (the --dedup pass,
+    using reconcile's single-winner merge)."""
+    groups, order, passthrough = {}, [], []
+    for r in rows:
+        first = (r.get("first_name") or "").strip().lower()
+        last = (r.get("last_name") or "").strip().lower()
+        if not first or not last:
+            passthrough.append(r)
+            continue
+        key = (first, last)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(r)
+    out = [_reconcile_merge(groups[k]) for k in order]
+    out.extend(passthrough)
+    return out
+
+
+def reconcile_contacts(rows):
+    """Clean and merge a contacts DB: drop junk addresses, merge duplicates by
+    shared email and by name, recompute derived fields, pick the best primary
+    email, and normalize names/phones. Records left with no email and no LinkedIn
+    URL are dropped. Returns sorted rows."""
+    rows = [dict(r) for r in rows]
+    # 1. drop junk addresses; re-point primary if it was dropped
+    for r in rows:
+        deduped, seen = [], set()
+        for e in r.get("emails") or []:
+            el = (e or "").strip().lower()
+            if (el and el not in seen and _valid_email(el)
+                    and not is_bot(el) and not _is_role_address(el)):
+                seen.add(el)
+                deduped.append(el)
+        r["emails"] = deduped
+        pe = (r.get("primary_email") or "").lower()
+        r["primary_email"] = pe if pe in seen else (deduped[0] if deduped else "")
+    # 2. merge by shared personal email, then 3. by name
+    rows = _merge_by_shared_email(rows)
+    rows = _merge_by_name(rows)
+    # 4-7. per-record cleanup
+    out = []
+    for r in rows:
+        r["num_emails"] = int(r.get("num_sent") or 0) + int(r.get("num_received") or 0)
+        if not str(r.get("company") or "").strip() and r.get("primary_email"):
+            r["company"] = company_from(r["primary_email"])
+        r["primary_email"] = _pick_primary(r)
+        r["first_name"] = _normalize_name(r.get("first_name", ""))
+        r["last_name"] = _normalize_name(r.get("last_name", ""))
+        r["phone"] = _normalize_phone(r.get("phone", ""))
+        if r.get("primary_email") or str(r.get("linkedin") or "").strip():
+            out.append(r)
+    out.sort(key=_contact_sort_key)
+    return out
+
+
 # ---- vCard export -----------------------------------------------------------
 def _vcard_escape(value):
     """Escape a value for a vCard 3.0 text field (RFC 2426)."""
@@ -1902,17 +2122,25 @@ def cmd_db(args, ofmt):
     n_existing = len(existing)
     n_new, n_updated = _fold_into(existing, rows, force=args.force)
     rows = list(existing.values())
-    if args.dedup:
+    n_folded = len(rows)
+    if args.reconcile:
+        rows = reconcile_contacts(rows)
+        extra = " then reconciled"
+    elif args.dedup:
         rows = dedup_contacts(rows)
+        extra = " then deduped"
+    else:
+        extra = ""
     rows = sorted(rows, key=_contact_sort_key)
     write_contacts_as(out_path, rows, ofmt)
 
-    extra = " then deduped" if args.dedup else ""
+    note = (f" ({n_folded - len(rows):,} merged/dropped)"
+            if (args.reconcile or args.dedup) else "")
     sys.stderr.write(
         f"\nWrote {out_path}{extra}\n"
         f"  {n_existing:,} existing + {n_new:,} new from "
         f"{os.path.basename(args.input)} = {len(rows):,} contacts "
-        f"({n_updated:,} updated).\n")
+        f"({n_updated:,} updated){note}.\n")
 
 
 # Recognized file formats. JSON is the native database; the rest are import
@@ -1962,6 +2190,11 @@ def parse_args(argv=None):
                         "the extension; 'outlook' writes Outlook's CSV layout")
     p.add_argument("--dedup", action="store_true",
                    help="merge contacts sharing a first+last name (json -> json)")
+    p.add_argument("--reconcile", action="store_true",
+                   help="clean and merge records (json -> json): drop junk/role "
+                        "addresses, merge duplicates by email and by name, "
+                        "recompute fields, and pick the best primary email. "
+                        "A superset of --dedup.")
     p.add_argument("--force", action="store_true",
                    help="when an imported record overlaps an existing one, "
                         "overwrite the existing text fields (company, title, "
@@ -2038,8 +2271,8 @@ def main(argv=None):
             sys.exit("error: --llm requires an mbox or PST input")
         if ofmt != "jsonl":
             sys.exit("error: --llm writes a .jsonl corpus, so -o must be .jsonl")
-        if args.dedup:
-            sys.exit("error: --llm cannot be combined with --dedup")
+        if args.dedup or args.reconcile:
+            sys.exit("error: --llm cannot be combined with --dedup/--reconcile")
         return cmd_dump_llm(args, ifmt)
 
     # Import: a mailbox / vCard / Outlook CSV / LinkedIn export builds contacts,
@@ -2050,18 +2283,18 @@ def main(argv=None):
         if ofmt not in DB_FORMATS and ifmt == "linkedin":
             sys.exit("error: a LinkedIn import writes a contacts database; "
                      "-o must be .json/.csv/.xlsx (not %s)" % ofmt)
-        if args.dedup:
-            sys.exit("error: --dedup applies to a json -> json database, not "
-                     "an import; import to .json first, then dedup")
+        if args.dedup or args.reconcile:
+            sys.exit("error: --dedup/--reconcile apply to a json -> json "
+                     "database, not an import; import to .json first, then run it")
         return cmd_import(args, ifmt, ofmt)
 
     # Native contacts DB input (json/csv/xlsx -- interchangeable layouts).
     if ifmt in DB_FORMATS:
         if ofmt == "jsonl":
             sys.exit("error: a .jsonl corpus is produced only with --llm")
-        if args.dedup:
+        if args.dedup or args.reconcile:
             if ofmt not in DB_FORMATS:
-                sys.exit("error: --dedup produces a native database; "
+                sys.exit("error: --dedup/--reconcile produce a native database; "
                          "-o must be .json/.csv/.xlsx (not %s)" % ofmt)
             return cmd_db(args, ofmt)
         # DB -> .json folds into the existing DB (never wipes it); DB -> other

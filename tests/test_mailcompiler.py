@@ -20,6 +20,7 @@ from mailcompiler.mailcompiler import (
     _write_xlsx, _read_xlsx, iter_mbox_messages,
     load_domain_list, contact_domains, contact_in_domains, select_by_domains,
     parse_linkedin_csv, _name_key, _fold_linkedin,
+    reconcile_contacts,
     main,
 )
 
@@ -1182,3 +1183,141 @@ class TestImportDateStamp:
             for p in (src, outp):
                 os.remove(p)
         assert got[0]["import_date"] == "2020-01-01"   # untouched
+
+
+class TestReconcile:
+    def test_merge_by_shared_email_diff_names(self):
+        rows = [
+            _row(first="Bob", last="Jones", primary="bob@acme.com",
+                 emails=["bob@acme.com"], n_recv=2, last_i="2024-01-01"),
+            _row(first="Robert", last="Jones", primary="rob@gmail.com",
+                 emails=["rob@gmail.com", "bob@acme.com"], last_i="2025-06-01"),
+        ]
+        out = reconcile_contacts(rows)
+        assert len(out) == 1
+        r = out[0]
+        assert "bob@acme.com" in r["emails"] and "rob@gmail.com" in r["emails"]
+        assert (r["first_name"], r["last_name"]) == ("Robert", "Jones")  # newest
+
+    def test_no_merge_on_shared_free_address(self):
+        rows = [
+            _row(first="Ann", last="One", primary="shared@gmail.com",
+                 emails=["shared@gmail.com"]),
+            _row(first="Bob", last="Two", primary="shared@gmail.com",
+                 emails=["shared@gmail.com"]),
+        ]
+        out = reconcile_contacts(rows)
+        assert len(out) == 2          # free provider not used as a merge key
+
+    def test_linkedin_authority_company_title(self):
+        a = _row(first="Bob", last="Jones", company="OldCo", title="Eng",
+                 primary="bob@acme.com", emails=["bob@acme.com"], last_i="2025-01-01")
+        b = _row(first="Bob", last="Jones", company="Acme Corp", title="VP",
+                 primary="bob2@acme.com", emails=["bob2@acme.com", "bob@acme.com"],
+                 last_i="2024-01-01")
+        b["linkedin"] = "https://x/in/bob"
+        out = reconcile_contacts([a, b])
+        assert len(out) == 1
+        assert out[0]["company"] == "Acme Corp" and out[0]["title"] == "VP"
+
+    def test_primary_matches_company(self):
+        r = _row(first="Sue", last="Smith", company="Nvidia",
+                 primary="sue@gmail.com",
+                 emails=["sue@gmail.com", "sue@nvidia.com"])
+        out = reconcile_contacts([r])
+        assert out[0]["primary_email"] == "sue@nvidia.com"
+
+    def test_drops_junk_addresses(self):
+        r = _row(first="Joe", last="Doe", primary="joe@acme.com",
+                 emails=["joe@acme.com", "no-reply@acme.com", "bad-addr"])
+        out = reconcile_contacts([r])
+        assert out[0]["emails"] == ["joe@acme.com"]
+        assert out[0]["primary_email"] == "joe@acme.com"
+
+    def test_keeps_linkedin_only(self):
+        r = _row(first="Lia", last="Only")
+        r["primary_email"], r["emails"] = "", []
+        r["linkedin"] = "https://x/in/lia"
+        out = reconcile_contacts([r])
+        assert len(out) == 1 and out[0]["linkedin"] == "https://x/in/lia"
+
+    def test_drops_emailless_no_linkedin(self):
+        r = _row(first="Ghost", last="None")
+        r["primary_email"], r["emails"] = "", []
+        assert reconcile_contacts([r]) == []
+
+    def test_num_emails_recomputed(self):
+        r = _row(first="Ed", last="Bee", primary="ed@x.com", emails=["ed@x.com"],
+                 n_sent=2, n_recv=3, n_emails=999)
+        out = reconcile_contacts([r])
+        assert out[0]["num_emails"] == 5
+
+    def test_name_titlecased(self):
+        r = _row(first="BOB", last="jones", primary="b@x.com", emails=["b@x.com"])
+        out = reconcile_contacts([r])
+        assert (out[0]["first_name"], out[0]["last_name"]) == ("Bob", "Jones")
+
+    def test_idempotent(self):
+        rows = [
+            _row(first="Bob", last="Jones", primary="bob@acme.com",
+                 emails=["bob@acme.com"], n_recv=1, last_i="2024-01-01"),
+            _row(first="Robert", last="Jones", primary="rob@gmail.com",
+                 emails=["rob@gmail.com", "bob@acme.com"], last_i="2025-01-01"),
+        ]
+        once = reconcile_contacts(rows)
+        twice = reconcile_contacts([dict(r) for r in once])
+        assert len(once) == len(twice) == 1
+
+
+class TestPipelineEndToEnd:
+    # PST is omitted: libpff only reads real binary .pst files (no writer to build
+    # a fixture); PST parsing is covered by TestPstMessageFields.
+    def test_full_flow(self):
+        mbox = ("From 1@xxx Wed Jun 03 14:35:08 +0000 2026\n"
+                "Delivered-To: me@self.com\n"
+                "From: Bob Jones <bob@acme.com>\n"
+                "To: me@self.com\n"
+                "Date: Wed, 03 Jun 2026 14:35:06 +0000\n"
+                'Content-Type: text/plain; charset="utf-8"\n'
+                "\nhi\n")
+        vcf = ("BEGIN:VCARD\nVERSION:3.0\nFN:Robert Jones\nN:Jones;Robert;;;\n"
+               "EMAIL;TYPE=INTERNET,PREF:rob.jones@gmail.com\n"
+               "EMAIL;TYPE=INTERNET:bob@acme.com\nEND:VCARD\n")
+        outlook = ("First Name,Last Name,Job Title,Company,E-mail Address\n"
+                   "Carol,Lee,,Beta,carol@beta.com\n"
+                   "Acme,Info,,Acme,info@acme.com\n")
+        li = _li_csv([("Robert", "Jones", "https://x/in/robjones", "",
+                       "Acme Corporation", "VP Sales", "01 Jan 2026")])
+        mp = _write_tmp(mbox, ".mbox")
+        vp = _write_tmp(vcf, ".vcf")
+        op = _write_tmp(outlook, ".csv")
+        lp = _write_tmp(li, ".csv")
+        db = _write_tmp("", ".json")
+        xl = _write_tmp("", ".xlsx")
+        try:
+            main(["-i", mp, "-o", db])                                  # mbox
+            main(["-i", vp, "-o", db])                                  # vcard
+            main(["-i", op, "--iformat", "outlook", "-o", db])         # outlook
+            main(["-i", lp, "--iformat", "linkedin", "-o", db,         # linkedin
+                  "--import-date", "2026-06-06"])
+            main(["-i", db, "-o", db, "--reconcile"])                   # reconcile
+            after = load_rows(db)
+            main(["-i", db, "-o", xl])                                  # export xlsx
+            xl_rows = load_rows(xl)
+        finally:
+            for p in (mp, vp, op, lp, db, xl):
+                os.remove(p)
+        emails = {r["primary_email"] for r in after}
+        # mbox 'Bob Jones' + vCard 'Robert Jones' share bob@acme.com -> 1 record
+        jones = [r for r in after if r["last_name"] == "Jones"]
+        assert len(jones) == 1
+        j = jones[0]
+        assert "bob@acme.com" in j["emails"] and "rob.jones@gmail.com" in j["emails"]
+        assert j["company"] == "Acme Corporation"          # LinkedIn authority
+        assert j["linkedin"] == "https://x/in/robjones"
+        # Carol Lee flows through; the role address info@acme.com is dropped
+        assert "carol@beta.com" in emails
+        assert not any(e == "info@acme.com" for r in after for e in r["emails"])
+        assert not any(r["last_name"] == "Info" for r in after)
+        # xlsx export round-trips equal to the reconciled json
+        assert xl_rows == after

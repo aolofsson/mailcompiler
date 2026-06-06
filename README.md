@@ -28,14 +28,13 @@ vCard and CSV.
 
 ```bash
 pip install -e .                                   # install the `mc` command
-mc -i takeout.mbox -o contacts.json                # create initial database
-mc -i archive.pst -o contacts.json                 # merge in pst archive
-mc -i all.vcf -o contacts.json                     # merge in vcard
-mc -i outlook.csv -iformat csv -o contacts.json    # merge in outlook csv
-mc -i l.csv -iformat linked -o contacts.json       # merge in linkedin export
-mc -dedup -i contacts.json -o contacts.json        # remove duplicates
-mc -reconsile -i contacts.json -o contacts.json    # clean/reconsile records
-mc -i contacts.json -o contacts.xlsx               # export to excel
+mc -i takeout.mbox -o contacts.json                  # create initial database
+mc -i archive.pst -o contacts.json                   # merge in pst archive
+mc -i all.vcf -o contacts.json                       # merge in vcard
+mc -i outlook.csv --iformat outlook -o contacts.json # merge in outlook csv
+mc -i l.csv --iformat linkedin -o contacts.json      # merge in linkedin export
+mc --reconcile -i contacts.json -o contacts.json     # clean + merge duplicates
+mc -i contacts.json -o contacts.xlsx                 # export to excel
 ```
 
 There's one command, `mc`, and one JSON database. `mc` infers the operation from
@@ -146,7 +145,8 @@ Merge one database into another (folding `extra.json` into `data/contacts.json`)
 usage: mc [-h] -i INPUT -o OUTPUT
           [--iformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}]
           [--oformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}] [--dedup]
-          [--force] [--llm] [--max-body BYTES] [--no-cc] [--whitelist PATH [PATH ...]]
+          [--reconcile] [--force] [--llm] [--max-body BYTES] [--no-cc]
+          [--whitelist PATH [PATH ...]]
           [--blacklist PATH [PATH ...]] [--type TYPE] [--company COMPANY]
           [--first-name FIRST_NAME] [--last-name LAST_NAME]
           [--email-domain EMAIL_DOMAIN] [--min-emails MIN_EMAILS]
@@ -171,6 +171,9 @@ options:
                         force the output format instead of inferring it from the
                         extension; 'outlook' writes Outlook's CSV layout
   --dedup               merge contacts sharing a first+last name (json -> json)
+  --reconcile           clean and merge records (json -> json): drop junk/role
+                        addresses, merge duplicates by email and by name, recompute
+                        fields, and pick the best primary email. A superset of --dedup.
   --force               when an imported record overlaps an existing one, overwrite the
                         existing text fields (company, title, name, ...) with the incoming
                         values; by default existing (hand-edited) values are kept
@@ -536,3 +539,36 @@ rewrite in place. Dedup is a JSON-to-JSON operation; to deduplicate before an
 export, dedup to `.json` first and then export. Because matching is by name
 only, two different people with the same name will be merged -- the joined
 `company` and multiple `emails` make such cases easy to spot for manual review.
+
+## Reconciling contacts
+
+After building a database from several sources (mbox, PST, vCard, Outlook,
+LinkedIn), `--reconcile` is a one-step cleanup pass over the JSON DB. It is a
+**superset of `--dedup`** -- it merges by name too -- plus it does the things
+name-dedup can't:
+
+```bash
+mc --reconcile -i contacts.json -o contacts.json   # clean + merge, in place
+```
+
+In order, reconcile:
+
+1. **Drops junk addresses** -- invalid emails, automated/bot senders, and
+   role/generic mailboxes (`no-reply@`, `info@`, `sales@`, ...).
+2. **Merges duplicates by shared email** -- the same person under two display
+   names who share an address (e.g. `Bob Jones` and `Robert Jones`, both at
+   `bob@acme.com`) that name-dedup misses. Free-provider (gmail/...), role, and
+   bot addresses are **not** used as merge keys, so people who merely share a
+   common mailbox are not fused.
+3. **Merges duplicates by name** (the `--dedup` step).
+4. **Recomputes** `num_emails`, lowercases/dedupes `emails`, and fills a blank
+   `company` from the primary domain.
+5. **Picks the best primary email** -- the address whose domain matches the
+   contact's current `company` if there is one, else the most-used address.
+6. **Normalizes** name capitalization and phone numbers (to `+E.164`).
+
+When duplicates are merged, `company`/`title` come from the **LinkedIn-sourced**
+record (LinkedIn is the authority on current employer); all other fields come
+from the record with the **newest `last_interaction`**. Counts sum, emails and
+sources union, dates widen. A record left with no email **and** no LinkedIn URL
+is dropped. Reconcile is idempotent -- running it again changes nothing.
