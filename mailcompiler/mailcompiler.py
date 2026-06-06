@@ -834,13 +834,14 @@ def _normalize_dt(dt):
     return dt
 
 
-def _ingest_message(msg, recs, self_set):
+def _ingest_message(msg, recs, self_set, include_cc=True):
     """Fold one normalized message into `recs`/`self_set`.
 
-    Returns False if the message was skipped (spam), True otherwise. The other
-    To/Cc recipients of mail I received (people on a thread with me, not the
-    sender) are always recorded so they become contacts, but they do not count
-    as sent or received -- only direct correspondence increments those.
+    Returns False if the message was skipped (spam), True otherwise. By default
+    the other To/Cc recipients of mail I received (people on a thread with me,
+    not the sender) are also recorded so they become contacts, but they do not
+    count as sent or received -- only direct correspondence increments those.
+    Pass include_cc=False (the --no-cc flag) to skip those co-recipients.
     """
     if msg["is_spam"]:
         return False
@@ -859,12 +860,13 @@ def _ingest_message(msg, recs, self_set):
     else:
         phones = _extract_phones(msg.get("body", ""))
         groups = [(msg["from"], "num_recv", phones)]
-        # Co-recipients on mail I received (To/Cc minus the sender): include them
-        # as contacts but credit no count and no signature phone.
-        seen = set(from_emails)
-        cc_pairs = [(n, a) for (n, a) in msg["to"]
-                    if (a or "").lower().strip() not in seen]
-        groups.append((cc_pairs, None, []))
+        if include_cc:
+            # Co-recipients on mail I received (To/Cc minus the sender): include
+            # them as contacts but credit no count and no signature phone.
+            seen = set(from_emails)
+            cc_pairs = [(n, a) for (n, a) in msg["to"]
+                        if (a or "").lower().strip() not in seen]
+            groups.append((cc_pairs, None, []))
 
     for pairs, attr, phones in groups:
         for raw_name, addr in pairs:
@@ -1750,7 +1752,8 @@ def cmd_import(args, ifmt, ofmt):
     src = iter_pst_messages(path) if pst else iter_mbox_messages(path)
     for msg in src:
         n_msgs += 1
-        if not _ingest_message(msg, recs, self_set):
+        if not _ingest_message(msg, recs, self_set,
+                               include_cc=not getattr(args, "no_cc", False)):
             n_skip_spam += 1
         if n_msgs % 50000 == 0:
             sys.stderr.write(f"  parsed {n_msgs:,} messages\n")
@@ -1971,6 +1974,10 @@ def parse_args(argv=None):
                    metavar="BYTES",
                    help="--llm: cap each message body to BYTES (default 262144; "
                         "0 = unlimited) so attachment blobs do not dominate")
+    p.add_argument("--no-cc", dest="no_cc", action="store_true",
+                   help="when importing a mailbox, do NOT bring in the other "
+                        "To/Cc recipients of mail you received; keep only direct "
+                        "senders and the recipients of your sent mail (less noise)")
     # Override the import_date stamp (default: today). Hidden; used by tests.
     p.add_argument("--import-date", dest="import_date", metavar="YYYY-MM-DD",
                    help=argparse.SUPPRESS)

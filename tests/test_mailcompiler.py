@@ -325,6 +325,14 @@ class TestIngestMessage:
                         recs, {"me@self.com"})
         assert recs["bob@x.com"].num_recv == 1
 
+    def test_no_cc_skips_corecipients(self):
+        recs = defaultdict(Rec)
+        _ingest_message(_msg(frm=[("Bob", "bob@x.com")],
+                             to=[("Me", "me@self.com"), ("Sue", "sue@y.com")]),
+                        recs, {"me@self.com"}, include_cc=False)
+        assert recs["bob@x.com"].num_recv == 1   # sender still recorded
+        assert "sue@y.com" not in recs           # co-recipient skipped
+
 
 class TestSignatureText:
     def test_after_dash_delimiter(self):
@@ -1113,6 +1121,32 @@ class TestMergeIsDefault:
             for p in (basep, extrap):
                 os.remove(p)
         assert emails == {"ann@x.com", "bob@y.com"}
+
+
+class TestNoCcCli:
+    def _mbox(self):
+        return ("From 1@xxx Wed Jun 03 14:35:08 +0000 2026\n"
+                "Delivered-To: me@self.com\n"
+                "From: Bob Jones <bob@x.com>\n"
+                "To: me@self.com, Sue Smith <sue@y.com>\n"
+                "Date: Wed, 03 Jun 2026 14:35:06 +0000\n"
+                'Content-Type: text/plain; charset="utf-8"\n'
+                "\nhi\n")
+
+    def test_default_includes_cc_and_no_cc_excludes(self):
+        mp = _write_tmp(self._mbox(), ".mbox")
+        d1 = _write_tmp("", ".json")
+        d2 = _write_tmp("", ".json")
+        try:
+            main(["-i", mp, "-o", d1])              # default: co-recipients in
+            main(["-i", mp, "-o", d2, "--no-cc"])   # opt out
+            with_cc = {r["primary_email"] for r in load_rows(d1)}
+            without = {r["primary_email"] for r in load_rows(d2)}
+        finally:
+            for p in (mp, d1, d2):
+                os.remove(p)
+        assert with_cc == {"bob@x.com", "sue@y.com"}   # Sue (Cc) harvested
+        assert without == {"bob@x.com"}                # Sue dropped with --no-cc
 
 
 class TestImportDateStamp:

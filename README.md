@@ -30,7 +30,7 @@ vCard and CSV.
 pip install -e .                                   # install the `mc` command
 mc -i takeout.mbox -o contacts.json                # create initial database
 mc -i archive.pst -o contacts.json                 # merge in pst archive
-mc -i all.vcard -o contacts.json                   # merge in vcard
+mc -i all.vcf -o contacts.json                     # merge in vcard
 mc -i outlook.csv -iformat csv -o contacts.json    # merge in outlook csv
 mc -i l.csv -iformat linked -o contacts.json       # merge in linkedin export
 mc -dedup -i contacts.json -o contacts.json        # remove duplicates
@@ -65,9 +65,10 @@ pip install -e .
 
 Build the JSON contacts database from a Gmail Takeout mbox (this also brings in
 the other To/Cc recipients of mail you received -- people on a thread with you,
-not just senders):
+not just senders; add `--no-cc` to skip them and keep only direct correspondents):
 
     mc -i "All mail Including Spam and Trash.mbox" -o data/contacts.json
+    mc -i "All mail Including Spam and Trash.mbox" -o data/contacts.json --no-cc
 
 Direct extraction from Takeout mbox to an xlsx spreadsheet:
 
@@ -145,7 +146,7 @@ Merge one database into another (folding `extra.json` into `data/contacts.json`)
 usage: mc [-h] -i INPUT -o OUTPUT
           [--iformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}]
           [--oformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}] [--dedup]
-          [--force] [--llm] [--max-body BYTES] [--whitelist PATH [PATH ...]]
+          [--force] [--llm] [--max-body BYTES] [--no-cc] [--whitelist PATH [PATH ...]]
           [--blacklist PATH [PATH ...]] [--type TYPE] [--company COMPANY]
           [--first-name FIRST_NAME] [--last-name LAST_NAME]
           [--email-domain EMAIL_DOMAIN] [--min-emails MIN_EMAILS]
@@ -177,6 +178,9 @@ options:
                         mbox/PST instead of building the DB
   --max-body BYTES      --llm: cap each message body to BYTES (default 262144; 0 =
                         unlimited) so attachment blobs do not dominate
+  --no-cc               when importing a mailbox, do NOT bring in the other To/Cc
+                        recipients of mail you received; keep only direct senders and the
+                        recipients of your sent mail (less noise)
   --whitelist PATH [PATH ...]
                         keep only contacts whose email domain matches an entry in these
                         files (one domain per line; '#' comments and blank lines ignored;
@@ -318,9 +322,10 @@ if **all** of these hold:
   (counts as `num_sent`), the sender (`From`) of mail you received (`num_received`),
   **or** one of the *other* `To`/`Cc` recipients of mail you received -- people on
   a thread with you, even if you never corresponded directly (these count 0
-  sent/received). For PST, "sent" mail is the **Sent Items** folder. (Including
+  sent/received). For PST, "sent" mail is the **Sent Items** folder. Including
   thread co-recipients gives broad reach but is noisier -- large CC lists,
-  mailing lists -- which the bot/no-reply/blacklist filters below help trim.)
+  mailing lists -- which the bot/no-reply/blacklist filters below help trim;
+  pass **`--no-cc`** to skip them entirely and keep only direct correspondents.
 - The message is **not** spam: the Gmail `Spam` label, or for PST the **Junk
   Email** folder, is skipped.
 - It is **not one of your own addresses** (auto-detected from the mbox
