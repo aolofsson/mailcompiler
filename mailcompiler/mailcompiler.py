@@ -30,6 +30,7 @@ Spec (confirmed with user):
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import re
@@ -174,6 +175,8 @@ def split_name(display, email_addr):
         ftok = clean(first).split()
         return (ftok[0].capitalize() if ftok else ""), clean(last).capitalize()
     parts = clean(name).split()
+    if not parts:                 # name was only punctuation (e.g. ".", "()")
+        return "", ""
     if len(parts) == 1:
         return parts[0], ""
     return parts[0], parts[-1]
@@ -624,6 +627,19 @@ def _message_text(m, cap=BODY_CAP):
     return ""
 
 
+def _fresh_body(body):
+    """Return the body up to the first quoted/reply line (the new message text,
+    including its signature), dropping the quoted thread history below it."""
+    if not body:
+        return ""
+    out = []
+    for ln in body.splitlines():
+        if ln.strip().startswith(">") or _REPLY_MARKER.match(ln.strip()):
+            break
+        out.append(ln)
+    return "\n".join(out).strip()
+
+
 def _signature_text(body):
     """Return just the signature region: the fresh (non-quoted) tail of a body,
     after a '-- ' delimiter if present, else its last SIG_TAIL_LINES lines."""
@@ -1013,27 +1029,47 @@ def _fold_into(existing, new_rows):
 def dump_llm(src, out_path):
     """Stream a per-email JSONL corpus from a normalized-message source.
 
-    One JSON object per line: subject/from/to/date/body. No-reply senders are
-    skipped. Returns the number of records written.
+    One JSON object per line: subject/from/to/date/body. Skips spam, no-reply /
+    automated-bulk senders, and empty bodies; strips quoted reply history from
+    each body and de-duplicates identical bodies. Returns the records written.
     """
     outdir = os.path.dirname(out_path)
     if outdir:
         os.makedirs(outdir, exist_ok=True)
-    n = 0
+    n = kept = spam = bulk = empty = dup = 0
+    seen = set()
     with open(out_path, "w", encoding="utf-8") as fh:
         for msg in src:
-            if _is_noreply(msg["from"]):
+            n += 1
+            if msg["is_spam"]:
+                spam += 1
                 continue
+            from_emails = [a for _, a in msg["from"] if a]
+            if _is_noreply(msg["from"]) or any(is_bot(a) for a in from_emails):
+                bulk += 1
+                continue
+            body = _fresh_body(msg.get("body", ""))
+            if not body:
+                empty += 1
+                continue
+            digest = hashlib.md5(body.encode("utf-8", "replace")).digest()
+            if digest in seen:
+                dup += 1
+                continue
+            seen.add(digest)
             rec = {
                 "subject": msg.get("subject", ""),
                 "from": _format_addrs(msg["from"]),
                 "to": _format_addrs(msg["to"]),
                 "date": msg["date"].isoformat() if msg["date"] else "",
-                "body": msg.get("body", ""),
+                "body": body,
             }
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-            n += 1
-    return n
+            kept += 1
+    sys.stderr.write(
+        f"  dropped: {spam:,} spam, {bulk:,} bulk, {empty:,} empty, "
+        f"{dup:,} duplicate (of {n:,} messages)\n")
+    return kept
 
 
 # ---- dedup ------------------------------------------------------------------
@@ -1356,12 +1392,14 @@ def _merge_and_write(args, new_rows, ofmt):
 
 
 def cmd_dump_llm(args, ifmt):
-    """Dump a per-email JSONL corpus (full bodies) from an mbox/PST; no DB."""
+    """Dump a per-email JSONL corpus from an mbox/PST; no DB. Bodies are capped
+    at --max-body bytes (0 = unlimited) so attachment blobs don't dominate."""
     path = args.input
     if not os.path.isfile(path):
         sys.exit("error: input not found: %s" % path)
-    src = (iter_pst_messages(path, body_cap=None) if ifmt == "pst"
-           else iter_mbox_messages(path, body_cap=None))
+    cap = args.max_body or None   # 0 -> unlimited
+    src = (iter_pst_messages(path, body_cap=cap) if ifmt == "pst"
+           else iter_mbox_messages(path, body_cap=cap))
     out_path = _resolve_out(args.output, "jsonl")
     n = dump_llm(src, out_path)
     sys.stderr.write(f"Wrote {n:,} email records to {out_path}\n")
@@ -1621,6 +1659,10 @@ def parse_args(argv=None):
     p.add_argument("--llm", action="store_true",
                    help="dump a per-email JSONL corpus (subject/from/to/date/"
                         "body) from an mbox/PST instead of building the DB")
+    p.add_argument("--max-body", dest="max_body", type=int, default=262144,
+                   metavar="BYTES",
+                   help="--llm: cap each message body to BYTES (default 262144; "
+                        "0 = unlimited) so attachment blobs do not dominate")
     p.add_argument("--blacklist", dest="blacklist", metavar="PATH",
                    help="file of domains to exclude from contacts (one per "
                         "line; '#' comments and blank lines ignored)")

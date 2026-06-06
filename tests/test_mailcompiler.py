@@ -17,7 +17,7 @@ from mailcompiler.mailcompiler import (
     _vcard_unescape, parse_vcards,
     OUTLOOK_FIELDS, write_outlook_csv, parse_outlook_csv,
     write_xlsx_rows, write_outlook_xlsx, parse_outlook_xlsx,
-    _write_xlsx, _read_xlsx,
+    _write_xlsx, _read_xlsx, iter_mbox_messages,
 )
 
 
@@ -78,6 +78,12 @@ class TestSplitName:
         first, last = split_name("Robin", "robin@acme.com")
         assert first == "Robin"
         assert last == ""
+
+    def test_punctuation_only_display_name(self):
+        # A display name that cleans to nothing must not crash (regression).
+        # Numeric local-part so the email fallback also yields no name.
+        for junk in (".", ". .", "''", "()", " , ", "-.-"):
+            assert split_name(junk, "12345@x.com") == ("", "")
 
 
 class TestClean:
@@ -317,9 +323,9 @@ class TestExtractPhones:
         assert _extract_phones(body) == []
 
 
-def _llm_msg(subject="", frm=None, to=None, date=None, body=""):
+def _llm_msg(subject="", frm=None, to=None, date=None, body="", is_spam=False):
     return {"subject": subject, "from": frm or [], "to": to or [],
-            "date": date, "is_sent": False, "is_spam": False,
+            "date": date, "is_sent": False, "is_spam": is_spam,
             "self_hints": [], "body": body}
 
 
@@ -360,6 +366,28 @@ class TestLlmCorpus:
         assert first["from"] == "Bob <bob@x.com>"
         assert first["body"] == "hello"
         assert lines[1]["date"] == "2024-05-05T09:00:00"
+
+    def test_dump_llm_filters_and_strips(self):
+        msgs = [
+            _llm_msg("a", [("Bob", "bob@x.com")],
+                     body="Hi there\nThanks\nOn Mon, X wrote:\n> old stuff"),
+            _llm_msg("spam", [("S", "s@x.com")], body="buy", is_spam=True),
+            _llm_msg("bot", [("GH", "notifications@github.com")], body="ping"),
+            _llm_msg("empty", [("E", "e@x.com")], body="   "),
+            _llm_msg("d1", [("D", "d@x.com")], body="same body"),
+            _llm_msg("d2", [("E2", "e2@x.com")], body="same body"),
+        ]
+        fd, path = tempfile.mkstemp(suffix=".jsonl")
+        os.close(fd)
+        try:
+            n = dump_llm(iter(msgs), path)
+            lines = [json.loads(ln) for ln in open(path) if ln.strip()]
+        finally:
+            os.remove(path)
+        assert n == 2                       # spam, bot, empty, duplicate dropped
+        bob = [ln for ln in lines if ln["subject"] == "a"][0]
+        assert bob["body"] == "Hi there\nThanks"          # quoted history stripped
+        assert sum(ln["body"] == "same body" for ln in lines) == 1   # deduped
 
 
 class _Entry:
@@ -722,3 +750,24 @@ class TestXlsx:
         assert b["phone"] == "+15550199"
         assert b["emails"] == ["alex@acme.com", "alex2@acme.com"]
         assert b["address"] == "123 Business Rd"
+
+
+class TestBodyCap:
+    def _mbox(self, body):
+        return ("From 100@xxx Wed Jun 03 14:35:08 +0000 2026\n"
+                "From: Bob <bob@x.com>\n"
+                "To: me@self.com\n"
+                "Date: Wed, 03 Jun 2026 14:35:06 +0000\n"
+                'Content-Type: text/plain; charset="utf-8"\n'
+                "\n" + body + "\n")
+
+    def test_body_is_capped(self):
+        path = _write_tmp(self._mbox("x" * 5000), ".mbox")
+        try:
+            capped = list(iter_mbox_messages(path, body_cap=400))[0]["body"]
+            full = list(iter_mbox_messages(path, body_cap=None))[0]["body"]
+        finally:
+            os.remove(path)
+        assert 0 < len(capped) <= 400      # cap honored
+        assert len(full) >= 5000           # uncapped keeps the whole body
+        assert len(capped) < len(full)
