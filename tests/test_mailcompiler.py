@@ -205,7 +205,7 @@ class TestRoundTrip:
         "title": "CTO", "company": "Globex", "phone": "+16502530000",
         "address": "10 Loop, CA", "primary_email": "jordan@globex.com",
         "emails": ["jordan@globex.com", "jordan.vale@globex.com"],
-        "num_emails": 3, "num_sent": 2, "num_received": 1, "num_cc": 0,
+        "num_emails": 3, "num_sent": 2, "num_received": 1,
         "first_interaction": "2023-01-01", "last_interaction": "2024-05-05",
         "source": "a.mbox | b.mbox",
         "linkedin": "https://www.linkedin.com/in/jordanvale", "import_date": "2026-06-06",
@@ -305,33 +305,25 @@ class TestIngestMessage:
                              body=body), recs, ss)
         assert not recs["bob@x.com"].phones   # our own signature is not theirs
 
-    def test_received_corecipients_ignored_by_default(self):
+    def test_corecipients_harvested_by_default(self):
         recs = defaultdict(Rec)
         _ingest_message(_msg(frm=[("Bob", "bob@x.com")],
                              to=[("Me", "me@self.com"), ("Sue", "sue@y.com")]),
                         recs, {"me@self.com"})
-        assert "bob@x.com" in recs and recs["bob@x.com"].num_recv == 1
-        assert "sue@y.com" not in recs        # co-recipient not harvested
-
-    def test_include_cc_harvests_corecipients(self):
-        recs = defaultdict(Rec)
-        _ingest_message(_msg(frm=[("Bob", "bob@x.com")],
-                             to=[("Me", "me@self.com"), ("Sue", "sue@y.com")]),
-                        recs, {"me@self.com"}, include_cc=True)
-        assert recs["bob@x.com"].num_recv == 1   # sender still num_recv
-        assert recs["bob@x.com"].num_cc == 0
-        assert recs["sue@y.com"].num_cc == 1     # co-recipient counted as cc
-        assert recs["sue@y.com"].num_recv == 0
+        assert recs["bob@x.com"].num_recv == 1   # sender counts as received
+        assert "sue@y.com" in recs               # co-recipient now harvested
+        assert recs["sue@y.com"].num_recv == 0   # but counts 0 sent/received
+        assert recs["sue@y.com"].num_sent == 0
+        assert recs["sue@y.com"].names.get("Sue") == 1   # name captured
         assert "me@self.com" not in recs         # self never harvested
 
-    def test_include_cc_does_not_double_count_sender(self):
+    def test_corecipient_who_is_sender_not_double_counted(self):
         recs = defaultdict(Rec)
-        # sender also appears in To: should not get both num_recv and num_cc
+        # sender also appears in To: should be credited received once, not twice
         _ingest_message(_msg(frm=[("Bob", "bob@x.com")],
                              to=[("Bob", "bob@x.com"), ("Me", "me@self.com")]),
-                        recs, {"me@self.com"}, include_cc=True)
+                        recs, {"me@self.com"})
         assert recs["bob@x.com"].num_recv == 1
-        assert recs["bob@x.com"].num_cc == 0
 
 
 class TestSignatureText:

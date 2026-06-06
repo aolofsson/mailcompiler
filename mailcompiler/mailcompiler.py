@@ -217,7 +217,7 @@ def company_from(email_addr):
 
 # ---- per-address accumulator ------------------------------------------------
 class Rec:
-    __slots__ = ("emails", "names", "phones", "num_sent", "num_recv", "num_cc",
+    __slots__ = ("emails", "names", "phones", "num_sent", "num_recv",
                  "first", "last")
 
     def __init__(self):
@@ -226,7 +226,6 @@ class Rec:
         self.phones = defaultdict(int)   # E.164 phone -> count (from signatures)
         self.num_sent = 0                # I -> them
         self.num_recv = 0                # them -> I
-        self.num_cc = 0                  # on a thread with me (To/Cc), --include-cc
         self.first = None
         self.last = None
 
@@ -246,7 +245,7 @@ TYPE_VALUES = ["customer", "competitor", "investor", "reporter", "partner",
 
 CSV_FIELDS = ["type", "friend", "last_name", "first_name", "title", "company",
               "phone", "address", "primary_email", "emails", "num_emails",
-              "num_sent", "num_received", "num_cc", "first_interaction",
+              "num_sent", "num_received", "first_interaction",
               "last_interaction", "source", "linkedin", "import_date"]
 
 # Source values may contain spaces (mbox filenames), so they are joined with
@@ -277,7 +276,6 @@ def person_to_row(p, source):
         "num_emails": p["num_emails"],
         "num_sent": p["num_sent"],
         "num_received": p["num_received"],
-        "num_cc": p.get("num_cc", 0),
         "first_interaction": p["first_interaction"],
         "last_interaction": p["last_interaction"],
         "source": source,
@@ -308,7 +306,6 @@ def _normalize_row(d):
         "num_emails": _to_int(d.get("num_emails")),
         "num_sent": _to_int(d.get("num_sent")),
         "num_received": _to_int(d.get("num_received")),
-        "num_cc": _to_int(d.get("num_cc")),
         "first_interaction": (str(d.get("first_interaction") or "").strip() or None),
         "last_interaction": (str(d.get("last_interaction") or "").strip() or None),
         "source": str(d.get("source") or "").strip(),
@@ -375,7 +372,6 @@ def merge_row(existing, new, force=False):
     existing["num_emails"] = new["num_emails"]
     existing["num_sent"] = new["num_sent"]
     existing["num_received"] = new["num_received"]
-    existing["num_cc"] = new.get("num_cc", 0)
     existing["first_interaction"] = _merge_date(
         existing["first_interaction"], new["first_interaction"], newest=False)
     existing["last_interaction"] = _merge_date(
@@ -402,7 +398,7 @@ def _native_cells(r):
             r["first_name"], r.get("title", ""), r["company"],
             r.get("phone", ""), r.get("address", ""), r["primary_email"],
             " ".join(r["emails"]), r["num_emails"], r["num_sent"],
-            r["num_received"], r.get("num_cc", 0), r["first_interaction"] or "",
+            r["num_received"], r["first_interaction"] or "",
             r["last_interaction"] or "", r.get("source", ""),
             r.get("linkedin", ""), r.get("import_date", "")]
 
@@ -838,12 +834,13 @@ def _normalize_dt(dt):
     return dt
 
 
-def _ingest_message(msg, recs, self_set, include_cc=False):
+def _ingest_message(msg, recs, self_set):
     """Fold one normalized message into `recs`/`self_set`.
 
-    Returns False if the message was skipped (spam), True otherwise. When
-    `include_cc` is set, the other To/Cc recipients of mail I received (people on
-    a thread with me, not the sender) are also recorded, counted as `num_cc`.
+    Returns False if the message was skipped (spam), True otherwise. The other
+    To/Cc recipients of mail I received (people on a thread with me, not the
+    sender) are always recorded so they become contacts, but they do not count
+    as sent or received -- only direct correspondence increments those.
     """
     if msg["is_spam"]:
         return False
@@ -854,7 +851,7 @@ def _ingest_message(msg, recs, self_set, include_cc=False):
     from_emails = [addr.lower() for _, addr in msg["from"] if addr]
     sent_by_me = msg["is_sent"] or any(a in self_set for a in from_emails)
     dt = msg["date"]
-    # Each group is (pairs, count-attr, signature-phones-to-credit).
+    # Each group is (pairs, count-attr or None, signature-phones-to-credit).
     if sent_by_me:
         for a in from_emails:        # learn self addresses
             self_set.add(a)
@@ -862,13 +859,12 @@ def _ingest_message(msg, recs, self_set, include_cc=False):
     else:
         phones = _extract_phones(msg.get("body", ""))
         groups = [(msg["from"], "num_recv", phones)]
-        if include_cc:
-            # Co-recipients on mail I received: the To/Cc minus the sender (the
-            # sender is already credited as num_recv above). No signature phone.
-            seen = set(from_emails)
-            cc_pairs = [(n, a) for (n, a) in msg["to"]
-                        if (a or "").lower().strip() not in seen]
-            groups.append((cc_pairs, "num_cc", []))
+        # Co-recipients on mail I received (To/Cc minus the sender): include them
+        # as contacts but credit no count and no signature phone.
+        seen = set(from_emails)
+        cc_pairs = [(n, a) for (n, a) in msg["to"]
+                    if (a or "").lower().strip() not in seen]
+        groups.append((cc_pairs, None, []))
 
     for pairs, attr, phones in groups:
         for raw_name, addr in pairs:
@@ -882,7 +878,8 @@ def _ingest_message(msg, recs, self_set, include_cc=False):
                 r.names[nm] += 1
             for ph in phones:        # signature phones (received mail only)
                 r.phones[ph] += 1
-            setattr(r, attr, getattr(r, attr) + 1)
+            if attr:                 # co-recipients (attr None) add no count
+                setattr(r, attr, getattr(r, attr) + 1)
             r.touch(dt)
     return True
 
@@ -1220,7 +1217,7 @@ def _new_linkedin_row(entry, run_date):
         "phone": "", "address": "",
         "primary_email": email,
         "emails": [email] if email else [],
-        "num_emails": 0, "num_sent": 0, "num_received": 0, "num_cc": 0,
+        "num_emails": 0, "num_sent": 0, "num_received": 0,
         "first_interaction": None, "last_interaction": None,
         "source": "linkedin",
         "linkedin": entry.get("url", ""),
@@ -1387,7 +1384,6 @@ def _merge_group(rows):
         "num_emails": sum(r["num_emails"] for r in rows),
         "num_sent": sum(r["num_sent"] for r in rows),
         "num_received": sum(r["num_received"] for r in rows),
-        "num_cc": sum(r.get("num_cc", 0) for r in rows),
         "linkedin": next((r.get("linkedin") for r in rows if r.get("linkedin")), ""),
         "import_date": max((r.get("import_date") or "") for r in rows),
         "first_interaction": first,
@@ -1754,8 +1750,7 @@ def cmd_import(args, ifmt, ofmt):
     src = iter_pst_messages(path) if pst else iter_mbox_messages(path)
     for msg in src:
         n_msgs += 1
-        if not _ingest_message(msg, recs, self_set,
-                               include_cc=getattr(args, "include_cc", False)):
+        if not _ingest_message(msg, recs, self_set):
             n_skip_spam += 1
         if n_msgs % 50000 == 0:
             sys.stderr.write(f"  parsed {n_msgs:,} messages\n")
@@ -1810,7 +1805,6 @@ def cmd_import(args, ifmt, ofmt):
                 merged.phones[ph] += c
             merged.num_sent += r.num_sent
             merged.num_recv += r.num_recv
-            merged.num_cc += r.num_cc
             merged.touch(r.first)
             merged.touch(r.last)
         # primary email = most-used address
@@ -1827,10 +1821,9 @@ def cmd_import(args, ifmt, ofmt):
             "primary_email": primary,
             "emails": sorted(merged.emails, key=lambda e: -merged.emails[e]),
             "display_name": display,
-            "num_emails": merged.num_sent + merged.num_recv + merged.num_cc,
+            "num_emails": merged.num_sent + merged.num_recv,
             "num_sent": merged.num_sent,
             "num_received": merged.num_recv,
-            "num_cc": merged.num_cc,
             "first_interaction": merged.first.date().isoformat() if merged.first else None,
             "last_interaction": merged.last.date().isoformat() if merged.last else None,
         }
@@ -1840,18 +1833,14 @@ def cmd_import(args, ifmt, ofmt):
     for addr in no_name:
         people.append(build([addr]))
 
-    # ---- final contact filters: full name + corresponded in either direction
-    # Keep anyone you sent to OR received from (OR were on a thread with, when
-    # --include-cc harvested To/Cc co-recipients).
+    # ---- final contact filter: keep anyone with a full name. This includes
+    # people you only shared a thread with (To/Cc co-recipients of mail you
+    # received), who have no sent/received count.
     n_built = len(people)
     people = [p for p in people if p["first_name"] and p["last_name"]]
-    n_after_name = len(people)
-    people = [p for p in people
-              if p["num_sent"] > 0 or p["num_received"] > 0 or p.get("num_cc", 0) > 0]
     n_kept = len(people)
     sys.stderr.write(
-        f"Contacts: {n_built:,} built -> {n_after_name:,} with full name "
-        f"-> {n_kept:,} with correspondence.\n")
+        f"Contacts: {n_built:,} built -> {n_kept:,} with full name.\n")
 
     source = os.path.basename(path)
     new_rows = [person_to_row(p, source) for p in people]
@@ -1982,10 +1971,6 @@ def parse_args(argv=None):
                    metavar="BYTES",
                    help="--llm: cap each message body to BYTES (default 262144; "
                         "0 = unlimited) so attachment blobs do not dominate")
-    p.add_argument("--include-cc", dest="include_cc", action="store_true",
-                   help="when importing a mailbox, also harvest the other To/Cc "
-                        "recipients of mail you received (people on a thread with "
-                        "you, not just the sender), counted as num_cc")
     # Override the import_date stamp (default: today). Hidden; used by tests.
     p.add_argument("--import-date", dest="import_date", metavar="YYYY-MM-DD",
                    help=argparse.SUPPRESS)
