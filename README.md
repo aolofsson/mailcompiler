@@ -40,10 +40,6 @@ mc --reconcile                             # clean + merge duplicates
 mc -o profit.xlsx                          # export to excel
 ```
 
-
-`mc` prints which path it resolved (e.g. `Using $MC_DB for -o/--output: ...`). If
-neither the flag nor `$MC_DB` is set, it errors.
-
 ## Installation
 
 ```bash
@@ -104,30 +100,28 @@ Export filtered contacts to a vCard:
 
 Export filtered contacts to CSV:
 
-    mc -i data/contacts.json --company Intel,AMD --min-emails 5 -o intel_amd.csv
+    mc --company Intel,AMD --min-emails 5 -o intel_amd.csv
 
 Export only contacts at target-company domains (`--whitelist`), or drop
 unwanted domains (`--blacklist`); both read one domain per line and ignore
 `#` comments and blank lines, and match subdomains too. Each flag takes a
 **list of files** (unioned), so you can keep categories in separate files:
 
-    mc -i data/contacts.json --whitelist companies.txt -o targets.xlsx
-    mc -i data/contacts.json --whitelist semiconductor.txt defense.txt equipment.txt -o targets.xlsx
-    mc -i data/contacts.json --blacklist spam_domains.txt competitors.txt -o cleaned.json
+    mc --whitelist semiconductor.txt defense.txt -o targets.xlsx
+    mc --blacklist spam_domains.txt competitors.txt -o cleaned.json
 
 Export in Outlook's column layout, as CSV or XLSX (`--oformat outlook`):
 
-    mc -i data/contacts.json -o outlook.csv --oformat outlook
-    mc -i data/contacts.json -o outlook.xlsx --oformat outlook
+    mc -o outlook.csv --oformat outlook
+    mc -o outlook.xlsx --oformat outlook
 
 Clean and merge duplicate records, rewriting in place:
 
-    mc -i data/contacts.json -o data/contacts.json --reconcile
+    mc --reconcile
 
 Merge one database into another (folding `extra.json` into `data/contacts.json`):
 
     mc -i extra.json -o data/contacts.json
-
 
 ### Set the database once with `$MC_DB`
 
