@@ -92,8 +92,9 @@ BOT_DOMAINS = (
     "mixmax.com", "mail.notion.so", "reply.github.com", "github.com",
     "mktomail.com", "beehiiv.com", "en25.com", "hubspotstarter.net",
     "connectedcommunity.org", "mailmarketo.com", "marketo.com",
+    "messaging.microsoft.com", "messaging.microsoftonline.com",
     "notifications.", "noreply.", "engagement.", "marketing.", "email.",
-    "news.", "mailing.", "updates.", "em.",
+    "news.", "mailing.", "updates.", "em.", "messaging.",
 )
 
 
@@ -111,8 +112,16 @@ def is_bot(email_addr):
     local, _, domain = email_addr.partition("@")
     if not domain:
         return True
-    norm = local.lower().replace("_", "-").replace(".", "-")
-    if BOT_LOCAL.match(norm) or BOT_SUBSTR.search(local.lower()):
+    ll = local.lower()
+    # Exchange X.500 / IMCEAEX encapsulated directory addresses are not real
+    # SMTP mailboxes (local-part like "imceaex-_o=...,_cn=recipients,_cn=...").
+    if ll.startswith("imceaex") or "_cn=" in ll or "_ou=" in ll:
+        return True
+    norm = ll.replace("_", "-").replace(".", "-")
+    # bulk/automation markers in either the local-part or the domain
+    # (e.g. "unsubscribes.em.secureserver.net").
+    if BOT_LOCAL.match(norm) or BOT_SUBSTR.search(ll) \
+            or BOT_SUBSTR.search(domain.lower()):
         return True
     if "+" in local and local.split("+", 1)[0].lower() in BOT_TAG_PREFIX:
         return True
@@ -1690,12 +1699,25 @@ def _scrub_controls(value):
     return re.sub(r"\s+", " ", _CONTROL_CHARS_RE.sub(" ", value)).strip()
 
 
+def _lstrip_nonalpha(tok):
+    """Drop leading non-letter junk so a name starts with a letter
+    ("'Foo" -> "Foo", "-Bar" -> "Bar"), keeping internal hyphens/apostrophes.
+    Unicode letters count, so non-Latin names are not stripped."""
+    for i, ch in enumerate(tok):
+        if ch.isalpha():
+            return tok[i:]
+    return ""
+
+
 def _normalize_name(name):
     """Trim/collapse whitespace and fix casing of all-upper/all-lower tokens
     (handling hyphens, apostrophes and Mc-), leaving already-mixed-case names
     (McX, DeShawn, MacLeod) untouched. Surname particles (van, de, der, ...) are
-    forced lowercase except in leading position."""
-    toks = [t for t in re.sub(r"\s+", " ", (name or "").strip()).split(" ") if t]
+    forced lowercase except in leading position. Leading non-letter junk is
+    removed so every name token starts with a letter."""
+    toks = [_lstrip_nonalpha(t)
+            for t in re.sub(r"\s+", " ", (name or "").strip()).split(" ")]
+    toks = [t for t in toks if t]
     out = []
     for i, tok in enumerate(toks):
         if i > 0 and _norm_affix(tok) in _SURNAME_PARTICLES:
