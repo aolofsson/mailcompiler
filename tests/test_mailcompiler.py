@@ -19,6 +19,7 @@ from mailcompiler.mailcompiler import (
     write_xlsx_rows, write_outlook_xlsx, parse_outlook_xlsx,
     _write_xlsx, _read_xlsx, iter_mbox_messages,
     load_domain_list, contact_domains, contact_in_domains, select_by_domains,
+    parse_linkedin_csv, _name_key, _fold_linkedin,
     main,
 )
 
@@ -177,6 +178,14 @@ class TestMergeRow:
         merge_row(e, self._new())
         assert e["phone"] == "+14155552671"
 
+    def test_force_overwrites_text(self):
+        e = self._existing()
+        merge_row(e, self._new(), force=True)
+        assert e["type"] == "customer"      # new is blank -> existing kept
+        assert e["title"] == "Director"     # new non-empty -> overwrites
+        assert e["phone"] == "+14155552671"  # new non-empty -> overwrites
+        assert e["emails"] == ["anna@initech.com", "anna.lee@initech.com"]
+
 
 class TestPersonToRow:
     def test_tags_source(self):
@@ -199,6 +208,7 @@ class TestRoundTrip:
         "num_emails": 3, "num_sent": 2, "num_received": 1, "num_cc": 0,
         "first_interaction": "2023-01-01", "last_interaction": "2024-05-05",
         "source": "a.mbox | b.mbox",
+        "linkedin": "https://www.linkedin.com/in/jordanvale", "import_date": "2026-06-06",
     }]
 
     def _roundtrip(self, ext):
@@ -905,3 +915,244 @@ class TestWhitelistExportCli:
                 os.remove(p)
         emails = {c["primary_email"] for c in got}
         assert emails == {"a@intel.com", "c@lockheedmartin.com"}
+
+
+# LinkedIn export header + a 3-line "Notes:" preamble, like the real file.
+_LI_PREAMBLE = ('Notes:\n'
+                '"some privacy note about missing emails"\n'
+                '\n'
+                'First Name,Last Name,URL,Email Address,Company,Position,'
+                'Connected On\n')
+
+
+def _li_csv(rows):
+    """rows: list of (first,last,url,email,company,position,connected)."""
+    body = ""
+    for r in rows:
+        body += ",".join('"%s"' % c if "," in c else c for c in r) + "\n"
+    return _LI_PREAMBLE + body
+
+
+class TestParseLinkedin:
+    def test_skips_preamble_and_parses(self):
+        path = _write_tmp(_li_csv([
+            ("Phil", "Dworsky", "https://www.linkedin.com/in/phildworsky", "",
+             "GlobalFoundries", "Director, Strategic Programs", "05 Jun 2026"),
+            ("Prashant", "Patil, PhD", "https://www.linkedin.com/in/drp", "",
+             "Micromize, Inc", "CEO & Founder", "04 Jun 2026"),
+        ]), ".csv")
+        try:
+            entries = parse_linkedin_csv(path)
+        finally:
+            os.remove(path)
+        assert len(entries) == 2
+        assert entries[0] == {
+            "first": "Phil", "last": "Dworsky",
+            "url": "https://www.linkedin.com/in/phildworsky", "email": "",
+            "company": "GlobalFoundries", "position": "Director, Strategic Programs"}
+        assert entries[1]["last"] == "Patil, PhD"      # quoted comma preserved
+        assert entries[1]["company"] == "Micromize, Inc"
+
+    def test_email_lowercased(self):
+        path = _write_tmp(_li_csv([
+            ("Sue", "Smith", "https://x/in/sue", "Sue@Y.COM", "Acme", "VP", "01 Jan 2020"),
+        ]), ".csv")
+        try:
+            entries = parse_linkedin_csv(path)
+        finally:
+            os.remove(path)
+        assert entries[0]["email"] == "sue@y.com"
+
+
+class TestNameKey:
+    def test_normalizes(self):
+        assert _name_key("Jordan", "Vale") == "jordan vale"
+        assert _name_key("Prashant", "Patil, PhD") == "prashant patil"   # suffix dropped
+        assert _name_key(" JOHN ", "O'Brien") == "john o"
+        assert _name_key("Cher", "") == ""           # need both names
+
+
+class TestLoadRowsKeepsLinkedinOnly:
+    def test_emailless_with_linkedin_kept(self):
+        rows = [
+            {"first_name": "No", "last_name": "Email", "primary_email": "",
+             "emails": [], "linkedin": "https://x/in/noemail"},
+            {"first_name": "Drop", "last_name": "Me", "primary_email": "",
+             "emails": []},                       # no email, no linkedin -> dropped
+        ]
+        path = _write_tmp(json.dumps(rows), ".json")
+        try:
+            got = load_rows(path)
+        finally:
+            os.remove(path)
+        assert len(got) == 1 and got[0]["last_name"] == "Email"
+
+
+class TestFoldLinkedin:
+    def _db(self):
+        return [
+            _row(first="Jordan", last="Vale", company="OldCo", title="",
+                 primary="jordan@oldco.com", n_emails=5, last_i="2020-01-01"),
+            _row(first="Sam", last="Lee", primary="sam1@a.com"),
+            _row(first="Sam", last="Lee", primary="sam2@b.com"),   # name collision
+        ]
+
+    def test_match_by_name_overwrites_authority(self):
+        rows = self._db()
+        rows, enr, add, amb, skip = _fold_linkedin(rows, [
+            {"first": "Jordan", "last": "Vale", "url": "https://x/in/jv",
+             "email": "", "company": "Globex", "position": "VP Eng"}],
+            "2026-06-06")
+        j = next(r for r in rows if r["first_name"] == "Jordan")
+        assert j["company"] == "Globex" and j["title"] == "VP Eng"  # overwritten
+        assert j["linkedin"] == "https://x/in/jv"
+        assert j["import_date"] == "2026-06-06"
+        assert j["last_interaction"] == "2020-01-01"   # email recency preserved
+        assert (enr, add, amb, skip) == (1, 0, 0, 0)
+
+    def test_ambiguous_name_skipped(self):
+        rows = self._db()
+        before = len(rows)
+        rows, enr, add, amb, skip = _fold_linkedin(rows, [
+            {"first": "Sam", "last": "Lee", "url": "https://x/in/sam",
+             "email": "", "company": "Acme", "position": "Eng"}], "2026-06-06")
+        assert (enr, add, amb, skip) == (0, 0, 1, 0)
+        assert len(rows) == before                     # not enriched, not added
+
+    def test_unmatched_added_emailless(self):
+        rows = self._db()
+        rows, enr, add, amb, skip = _fold_linkedin(rows, [
+            {"first": "Nora", "last": "New", "url": "https://x/in/nora",
+             "email": "", "company": "Startup", "position": "Founder"}], "2026-06-06")
+        n = next(r for r in rows if r["first_name"] == "Nora")
+        assert add == 1 and n["primary_email"] == "" and n["emails"] == []
+        assert n["linkedin"] == "https://x/in/nora" and n["company"] == "Startup"
+        assert n["source"] == "linkedin"
+
+    def test_no_email_no_url_skipped(self):
+        rows = self._db()
+        before = len(rows)
+        rows, enr, add, amb, skip = _fold_linkedin(rows, [
+            {"first": "Ghost", "last": "Person", "url": "", "email": "",
+             "company": "Nowhere", "position": "Mystery"}], "2026-06-06")
+        assert (enr, add, amb, skip) == (0, 0, 0, 1)   # no key -> skipped
+        assert len(rows) == before
+
+    def test_match_by_email_when_name_differs(self):
+        rows = self._db()
+        rows, enr, add, amb, skip = _fold_linkedin(rows, [
+            {"first": "J", "last": "V", "url": "https://x/in/jv2",
+             "email": "jordan@oldco.com", "company": "NewCo", "position": "CTO"}],
+            "2026-06-06")
+        j = next(r for r in rows if r["primary_email"] == "jordan@oldco.com")
+        assert j["company"] == "NewCo" and add == 0 and enr == 1
+
+    def test_idempotent_on_url(self):
+        rows = self._db()
+        entry = [{"first": "Nora", "last": "New", "url": "https://x/in/nora",
+                  "email": "", "company": "Startup", "position": "Founder"}]
+        rows, *_ = _fold_linkedin(rows, entry, "2026-06-06")
+        n1 = len(rows)
+        rows, enr, add, amb, skip = _fold_linkedin(rows, entry, "2026-06-07")
+        assert add == 0 and len(rows) == n1            # url match, no duplicate
+        n = next(r for r in rows if r["first_name"] == "Nora")
+        assert n["import_date"] == "2026-06-07"        # refreshed
+
+
+class TestLinkedinImportCli:
+    def test_merge_into_db(self):
+        db = [_row(first="Jordan", last="Vale", company="OldCo",
+                   primary="jordan@oldco.com", n_emails=3, last_i="2020-01-01")]
+        dbp = _write_tmp(json.dumps(db), ".json")
+        lip = _write_tmp(_li_csv([
+            ("Jordan", "Vale", "https://x/in/jv", "", "Globex", "VP", "05 Jun 2026"),
+            ("Nora", "New", "https://x/in/nora", "", "Startup", "Founder", "01 Jan 2024"),
+        ]), ".csv")
+        try:
+            main(["-i", lip, "--iformat", "linkedin", "-o", dbp,
+                  "--import-date", "2026-06-06"])
+            got = load_rows(dbp)
+        finally:
+            for p in (dbp, lip):
+                os.remove(p)
+        by_name = {(r["first_name"], r["last_name"]): r for r in got}
+        assert len(got) == 2
+        assert by_name[("Jordan", "Vale")]["company"] == "Globex"
+        assert by_name[("Jordan", "Vale")]["import_date"] == "2026-06-06"
+        assert by_name[("Nora", "New")]["primary_email"] == ""      # email-less new
+        assert by_name[("Nora", "New")]["linkedin"] == "https://x/in/nora"
+
+
+class TestMergeIsDefault:
+    def _mbox(self):
+        return ("From 1@xxx Wed Jun 03 14:35:08 +0000 2026\n"
+                "Delivered-To: me@self.com\n"
+                "From: Bob Jones <bob@x.com>\n"
+                "To: me@self.com\n"
+                "Date: Wed, 03 Jun 2026 14:35:06 +0000\n"
+                'Content-Type: text/plain; charset="utf-8"\n'
+                "\nhi\n")
+
+    def test_import_does_not_wipe_existing_db(self):
+        # Pre-existing DB with a hand-edited contact.
+        db = [_row(first="Ann", last="Base", company="Acme", ctype="customer",
+                   primary="ann@acme.com", n_recv=1)]
+        dbp = _write_tmp(json.dumps(db), ".json")
+        mp = _write_tmp(self._mbox(), ".mbox")
+        try:
+            main(["-i", mp, "-o", dbp])           # no --merge flag exists anymore
+            got = {r["primary_email"]: r for r in load_rows(dbp)}
+        finally:
+            for p in (dbp, mp):
+                os.remove(p)
+        assert "ann@acme.com" in got              # existing kept (not wiped)
+        assert got["ann@acme.com"]["type"] == "customer"
+        assert "bob@x.com" in got                 # new import folded in
+
+    def test_db_to_json_folds_not_overwrites(self):
+        base = [_row(first="Ann", last="A", primary="ann@x.com", n_recv=1)]
+        extra = [_row(first="Bob", last="B", primary="bob@y.com", n_recv=1)]
+        basep = _write_tmp(json.dumps(base), ".json")
+        extrap = _write_tmp(json.dumps(extra), ".json")
+        try:
+            main(["-i", extrap, "-o", basep])     # DB -> json merges into base
+            emails = {r["primary_email"] for r in load_rows(basep)}
+        finally:
+            for p in (basep, extrap):
+                os.remove(p)
+        assert emails == {"ann@x.com", "bob@y.com"}
+
+
+class TestImportDateStamp:
+    def _mbox(self):
+        return ("From 1@xxx Wed Jun 03 14:35:08 +0000 2026\n"
+                "Delivered-To: me@self.com\n"
+                "From: Bob Jones <bob@x.com>\n"
+                "To: me@self.com\n"
+                "Date: Wed, 03 Jun 2026 14:35:06 +0000\n"
+                'Content-Type: text/plain; charset="utf-8"\n'
+                "\nhi\n")
+
+    def test_mbox_import_stamps_date(self):
+        mp = _write_tmp(self._mbox(), ".mbox")
+        outp = _write_tmp("", ".json")
+        try:
+            main(["-i", mp, "-o", outp, "--import-date", "2026-06-06"])
+            got = load_rows(outp)
+        finally:
+            for p in (mp, outp):
+                os.remove(p)
+        assert got and all(r["import_date"] == "2026-06-06" for r in got)
+
+    def test_db_convert_does_not_restamp(self):
+        rows = [_row(first="A", last="One", primary="a@x.com", n_recv=1)]
+        rows[0]["import_date"] = "2020-01-01"
+        src = _write_tmp(json.dumps(rows), ".json")
+        outp = _write_tmp("", ".json")
+        try:
+            main(["-i", src, "-o", outp])          # native json->json convert
+            got = load_rows(outp)
+        finally:
+            for p in (src, outp):
+                os.remove(p)
+        assert got[0]["import_date"] == "2020-01-01"   # untouched

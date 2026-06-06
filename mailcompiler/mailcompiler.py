@@ -36,7 +36,7 @@ import os
 import re
 import sys
 from collections import defaultdict
-from datetime import timezone
+from datetime import date, timezone
 from email.parser import HeaderParser, Parser
 from email.header import decode_header, make_header
 from email.utils import getaddresses, parsedate_to_datetime
@@ -247,7 +247,7 @@ TYPE_VALUES = ["customer", "competitor", "investor", "reporter", "partner",
 CSV_FIELDS = ["type", "friend", "last_name", "first_name", "title", "company",
               "phone", "address", "primary_email", "emails", "num_emails",
               "num_sent", "num_received", "num_cc", "first_interaction",
-              "last_interaction", "source"]
+              "last_interaction", "source", "linkedin", "import_date"]
 
 # Source values may contain spaces (mbox filenames), so they are joined with
 # this separator rather than a space (which the emails column uses).
@@ -281,6 +281,8 @@ def person_to_row(p, source):
         "first_interaction": p["first_interaction"],
         "last_interaction": p["last_interaction"],
         "source": source,
+        "linkedin": "",
+        "import_date": "",
     }
 
 
@@ -310,29 +312,35 @@ def _normalize_row(d):
         "first_interaction": (str(d.get("first_interaction") or "").strip() or None),
         "last_interaction": (str(d.get("last_interaction") or "").strip() or None),
         "source": str(d.get("source") or "").strip(),
+        "linkedin": str(d.get("linkedin") or "").strip(),
+        "import_date": str(d.get("import_date") or "").strip(),
     }
 
 
 def load_rows(path):
     """Load a contacts file into a list of canonical row dicts.
 
-    Format follows the extension: .json (the native store) or .csv. Missing
-    files yield an empty list.
+    Format follows the extension: .json (the native store) or .csv. A missing or
+    empty file yields an empty list.
     """
-    if not os.path.isfile(path):
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
         return []
     low = path.lower()
     if low.endswith(".json"):
         with open(path, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
+            text = fh.read().strip()
+        data = json.loads(text) if text else []
         records = data if isinstance(data, list) else []
     elif low.endswith(".xlsx"):
         records = _read_xlsx(path)
     else:
         with open(path, "r", encoding="utf-8", newline="") as fh:
             records = list(csv.DictReader(fh))
+    # A record is keyed by its email; LinkedIn-only contacts have no email but
+    # are identified by their profile URL, so keep those too.
     return [_normalize_row(d) for d in records
-            if str(d.get("primary_email") or "").strip()]
+            if str(d.get("primary_email") or "").strip()
+            or str(d.get("linkedin") or "").strip()]
 
 
 def _merge_date(a, b, newest):
@@ -352,13 +360,15 @@ def _union_sources(a, b):
     return SOURCE_SEP.join(out)
 
 
-def merge_row(existing, new):
-    """Merge `new` into `existing`. Hand-edited text fields (type, name, company)
-    are preserved; counts are overwritten with the latest import; emails and
-    sources union; the date range widens."""
+def merge_row(existing, new, force=False):
+    """Merge `new` into `existing`. By default hand-edited text fields (type,
+    name, company, ...) are preserved (the new value only fills a blank); with
+    `force=True` a non-empty new value overwrites the existing one. Counts are
+    overwritten with the latest import; emails and sources union; the date range
+    widens."""
     for f in ("type", "friend", "last_name", "first_name", "title", "company",
               "phone", "address"):
-        existing[f] = existing[f] or new[f]
+        existing[f] = (new[f] or existing[f]) if force else (existing[f] or new[f])
     for e in new["emails"]:
         if e not in existing["emails"]:
             existing["emails"].append(e)
@@ -371,6 +381,10 @@ def merge_row(existing, new):
     existing["last_interaction"] = _merge_date(
         existing["last_interaction"], new["last_interaction"], newest=True)
     existing["source"] = _union_sources(existing["source"], new["source"])
+    nl, el = new.get("linkedin", ""), existing.get("linkedin", "")
+    existing["linkedin"] = (nl or el) if force else (el or nl)
+    # import_date reflects the most recent import that touched this record.
+    existing["import_date"] = new.get("import_date") or existing.get("import_date", "")
 
 
 def _write_atomic(path, write_fn):
@@ -389,7 +403,8 @@ def _native_cells(r):
             r.get("phone", ""), r.get("address", ""), r["primary_email"],
             " ".join(r["emails"]), r["num_emails"], r["num_sent"],
             r["num_received"], r.get("num_cc", 0), r["first_interaction"] or "",
-            r["last_interaction"] or "", r.get("source", "")]
+            r["last_interaction"] or "", r.get("source", ""),
+            r.get("linkedin", ""), r.get("import_date", "")]
 
 
 def write_csv_rows(path, rows):
@@ -532,6 +547,43 @@ def parse_outlook_xlsx(path):
         if row:
             rows.append(row)
     return rows
+
+
+def parse_linkedin_csv(path):
+    """Parse a LinkedIn 'Connections' CSV export into entry dicts.
+
+    The export has a few-line 'Notes:' preamble before the real header row
+    (First Name,Last Name,URL,Email Address,Company,Position,Connected On), so we
+    scan for the header. Most rows have no email; the profile URL is the stable
+    identifier. Returns a list of
+    {first, last, url, email, company, position} dicts (Connected On unused).
+    """
+    with open(path, "r", encoding="utf-8-sig", newline="") as fh:
+        rows = list(csv.reader(fh))
+    hidx = next((i for i, r in enumerate(rows)
+                 if "First Name" in r and "Email Address" in r), None)
+    if hidx is None:
+        sys.exit("error: %s does not look like a LinkedIn Connections export "
+                 "(no 'First Name'/'Email Address' header)" % path)
+    col = {name: i for i, name in enumerate(rows[hidx])}
+
+    def g(r, name):
+        i = col.get(name)
+        return r[i].strip() if i is not None and i < len(r) else ""
+
+    entries = []
+    for r in rows[hidx + 1:]:
+        if not any(c.strip() for c in r):
+            continue
+        entries.append({
+            "first": g(r, "First Name"),
+            "last": g(r, "Last Name"),
+            "url": g(r, "URL"),
+            "email": g(r, "Email Address").lower(),
+            "company": g(r, "Company"),
+            "position": g(r, "Position"),
+        })
+    return entries
 
 
 # ---- query / list helpers ---------------------------------------------------
@@ -1076,8 +1128,19 @@ def write_contacts_as(path, rows, fmt):
         write_json_rows(path, rows)
 
 
+def _record_key(r):
+    """Stable identity for a contact used to key a merge: its email, else its
+    LinkedIn URL. This lets email-less LinkedIn-only contacts survive a merge
+    (otherwise an email-keyed merge would silently drop them)."""
+    email = (r.get("primary_email") or "").strip().lower()
+    if email:
+        return email
+    url = (r.get("linkedin") or "").strip().rstrip("/").lower()
+    return ("linkedin:" + url) if url else ""
+
+
 def _read_existing_contacts(path, fmt):
-    """Read an existing output file (for --merge) as {primary_email_lower: row};
+    """Read an existing output file to fold an import into, as {record_key: row};
     a missing file yields {}."""
     if not os.path.isfile(path):
         return {}
@@ -1088,7 +1151,12 @@ def _read_existing_contacts(path, fmt):
                 else parse_outlook_csv)(path)
     else:  # json / native csv / native xlsx
         rows = load_rows(path)
-    return {r["primary_email"].lower(): r for r in rows if r.get("primary_email")}
+    out = {}
+    for r in rows:
+        key = _record_key(r)
+        if key:
+            out[key] = r
+    return out
 
 
 def _contact_sort_key(r):
@@ -1097,21 +1165,138 @@ def _contact_sort_key(r):
             r["last_name"].lower(), r["first_name"].lower())
 
 
-def _fold_into(existing, new_rows):
-    """Fold new_rows into the existing {email: row} dict in place; returns
-    (n_new, n_updated)."""
+def _fold_into(existing, new_rows, force=False):
+    """Fold new_rows into the existing {record_key: row} dict in place; returns
+    (n_new, n_updated). With force=True, overlapping fields are overwritten."""
     n_new = n_updated = 0
     for row in new_rows:
-        key = row["primary_email"].lower()
+        key = _record_key(row)
         if not key:
-            continue   # an email is required to key the contacts DB
+            continue   # no email and no LinkedIn URL: nothing to key it by
         if key in existing:
-            merge_row(existing[key], row)
+            merge_row(existing[key], row, force=force)
             n_updated += 1
         else:
             existing[key] = row
             n_new += 1
     return n_new, n_updated
+
+
+def _run_date(args):
+    """The date to stamp on imported records: an explicit --import-date override
+    (for deterministic tests) or today's date, as an ISO string."""
+    return getattr(args, "import_date", None) or date.today().isoformat()
+
+
+def _stamp_import_date(rows, run_date):
+    """Stamp import_date (and default linkedin) on freshly imported rows."""
+    for r in rows:
+        r.setdefault("linkedin", "")
+        r["import_date"] = run_date
+    return rows
+
+
+def _name_key(first, last):
+    """Normalized 'first last' key for matching (lowercased, punctuation/suffix
+    stripped, e.g. 'Patil, PhD' -> 'patil'). Empty if no usable name."""
+    f = re.sub(r"[^a-z0-9]+", " ", clean(first or "").lower()).strip()
+    last = re.sub(r"[^a-z0-9]+", " ", clean(last or "").lower()).strip()
+    # last name may carry a suffix token (phd/jr/...); keep the first token
+    last = last.split(" ")[0] if last else ""
+    f = f.split(" ")[0] if f else ""
+    key = (f + " " + last).strip()
+    return key if f and last else ""
+
+
+def _new_linkedin_row(entry, run_date):
+    """Build a fresh contact row from a LinkedIn entry (may be email-less)."""
+    email = (entry.get("email") or "").strip().lower()
+    return {
+        "type": "", "friend": "",
+        "last_name": clean(entry.get("last", "")),
+        "first_name": clean(entry.get("first", "")),
+        "title": entry.get("position", ""),
+        "company": entry.get("company", ""),
+        "phone": "", "address": "",
+        "primary_email": email,
+        "emails": [email] if email else [],
+        "num_emails": 0, "num_sent": 0, "num_received": 0, "num_cc": 0,
+        "first_interaction": None, "last_interaction": None,
+        "source": "linkedin",
+        "linkedin": entry.get("url", ""),
+        "import_date": run_date,
+    }
+
+
+def _fold_linkedin(rows, entries, run_date, source="linkedin"):
+    """Fold LinkedIn entries into the contact rows in place. LinkedIn is the
+    authority on current employer/title, so company/title are OVERWRITTEN on a
+    match (unlike the generic merge). Matching priority: profile URL, then email,
+    then normalized name. Ambiguous names (>1 match) are skipped. Unmatched
+    entries are added as new contacts (keyed by URL when email-less).
+
+    Returns (rows, n_enriched, n_added, n_ambiguous, n_skipped). Entries with
+    neither an email nor a profile URL that match no existing contact are skipped
+    (n_skipped): they have no key, so they would be lost on the next load and
+    re-added on every run.
+    """
+    def norm_url(u):
+        return (u or "").strip().rstrip("/").lower()
+
+    by_email, by_url, by_name = {}, {}, defaultdict(list)
+
+    def index(row):
+        for e in [row.get("primary_email", "")] + list(row.get("emails") or []):
+            e = (e or "").strip().lower()
+            if e:
+                by_email.setdefault(e, row)
+        u = norm_url(row.get("linkedin"))
+        if u:
+            by_url.setdefault(u, row)
+        k = _name_key(row.get("first_name"), row.get("last_name"))
+        if k:
+            by_name[k].append(row)
+
+    for row in rows:
+        index(row)
+
+    n_enriched = n_added = n_ambiguous = n_skipped = 0
+    for e in entries:
+        url, email = norm_url(e.get("url")), (e.get("email") or "").strip().lower()
+        match = None
+        if url and url in by_url:
+            match = by_url[url]
+        elif email and email in by_email:
+            match = by_email[email]
+        else:
+            cands = by_name.get(_name_key(e.get("first"), e.get("last")), [])
+            if len(cands) == 1:
+                match = cands[0]
+            elif len(cands) > 1:
+                n_ambiguous += 1
+                continue
+        if match is not None:
+            if e.get("company"):
+                match["company"] = e["company"]
+            if e.get("position"):
+                match["title"] = e["position"]
+            if e.get("url"):
+                match["linkedin"] = e["url"]
+            match["import_date"] = run_date
+            if email and email not in (a.lower() for a in match.get("emails", [])):
+                match.setdefault("emails", []).append(email)
+                if not match.get("primary_email"):
+                    match["primary_email"] = email
+            n_enriched += 1
+        elif not email and not url:
+            n_skipped += 1      # no email and no URL: nothing to key it by
+        else:
+            row = _new_linkedin_row(e, run_date)
+            row["source"] = source
+            rows.append(row)
+            index(row)          # so duplicate LI rows don't double-add
+            n_added += 1
+    return rows, n_enriched, n_added, n_ambiguous, n_skipped
 
 
 def dump_llm(src, out_path):
@@ -1203,6 +1388,8 @@ def _merge_group(rows):
         "num_sent": sum(r["num_sent"] for r in rows),
         "num_received": sum(r["num_received"] for r in rows),
         "num_cc": sum(r.get("num_cc", 0) for r in rows),
+        "linkedin": next((r.get("linkedin") for r in rows if r.get("linkedin")), ""),
+        "import_date": max((r.get("import_date") or "") for r in rows),
         "first_interaction": first,
         "last_interaction": last,
         "source": source,
@@ -1460,24 +1647,48 @@ def parse_vcards(path):
 
 # ---- commands ---------------------------------------------------------------
 def _merge_and_write(args, new_rows, ofmt):
-    """Write new_rows to args.output in ofmt. With --merge, fold into the
-    existing output file (counts overwritten with this batch, emails and sources
-    union, date range widens, hand-edited fields preserved, rows only in the old
-    file kept). Without --merge the output is written fresh (overwritten)."""
+    """Fold new_rows into the existing output DB and write it back. An import
+    never wipes the target: existing contacts are kept, counts are overwritten
+    with this batch, emails and sources union, the date range widens. Hand-edited
+    text fields are preserved unless --force overwrites overlapping fields. A
+    missing output file is created fresh."""
     cpath = _resolve_out(args.output, ofmt)
     outdir = os.path.dirname(cpath)
     if outdir:
         os.makedirs(outdir, exist_ok=True)
-    merged = _read_existing_contacts(cpath, ofmt) if args.merge else {}
+    merged = _read_existing_contacts(cpath, ofmt)
     n_existing = len(merged)
-    n_new, n_updated = _fold_into(merged, new_rows)
+    n_new, n_updated = _fold_into(merged, new_rows, force=args.force)
     rows = sorted(merged.values(), key=_contact_sort_key)
     write_contacts_as(cpath, rows, ofmt)
-    verb = "Merged into" if args.merge else "Wrote"
     sys.stderr.write(
-        f"\n{verb} {cpath}\n"
+        f"\nWrote {cpath}\n"
         f"  {n_existing:,} existing + {n_new:,} new "
         f"({n_updated:,} updated) = {len(rows):,} contacts.\n")
+
+
+def cmd_import_linkedin(args, ofmt, run_date):
+    """Import a LinkedIn Connections CSV, folding into the existing output DB
+    (overwriting company/title -- LinkedIn is the authority -- adding the profile
+    URL and any new connections). A missing output file is created fresh."""
+    entries = parse_linkedin_csv(args.input)
+    source = os.path.basename(args.input)
+    cpath = _resolve_out(args.output, ofmt)
+    outdir = os.path.dirname(cpath)
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
+    existing = load_rows(cpath)
+    n_existing = len(existing)
+    rows, n_enriched, n_added, n_ambiguous, n_skipped = _fold_linkedin(
+        existing, entries, run_date, source=source)
+    rows = sorted(rows, key=_contact_sort_key)
+    write_contacts_as(cpath, rows, ofmt)
+    sys.stderr.write(
+        f"\nWrote {cpath} from {source}\n"
+        f"  {len(entries):,} LinkedIn rows: {n_enriched:,} enriched, "
+        f"{n_added:,} added, {n_ambiguous:,} ambiguous-skipped, "
+        f"{n_skipped:,} skipped (no email/URL).\n"
+        f"  {n_existing:,} existing -> {len(rows):,} contacts.\n")
 
 
 def cmd_dump_llm(args, ifmt):
@@ -1501,14 +1712,21 @@ def cmd_import(args, ifmt, ofmt):
     # Self addresses are auto-detected: the mbox Delivered-To header / the From
     # of Sent-folder (or Sent-labeled) mail.
     self_set = set()
+    run_date = _run_date(args)   # stamped as import_date on imported records
 
     if not os.path.isfile(path):
         sys.exit("error: input not found: %s" % path)
+
+    # LinkedIn Connections export: fold into the existing output DB (overwrite
+    # company/title, add the profile URL and any new connections).
+    if ifmt == "linkedin":
+        return cmd_import_linkedin(args, ofmt, run_date)
 
     # Outlook CSV/XLSX: read the Outlook column layout straight into rows.
     if ifmt == "outlook":
         new_rows = (parse_outlook_xlsx if path.lower().endswith(".xlsx")
                     else parse_outlook_csv)(path)
+        _stamp_import_date(new_rows, run_date)
         sys.stderr.write(
             f"Parsed {len(new_rows):,} contacts from {os.path.basename(path)}.\n")
         _merge_and_write(args, new_rows, ofmt)
@@ -1517,6 +1735,7 @@ def cmd_import(args, ifmt, ofmt):
     # vCard input: contacts come straight from the cards (no message pipeline).
     if ifmt == "vcard":
         new_rows = parse_vcards(path)
+        _stamp_import_date(new_rows, run_date)
         sys.stderr.write(
             f"Parsed {len(new_rows):,} contacts from {os.path.basename(path)}.\n")
         _merge_and_write(args, new_rows, ofmt)
@@ -1636,6 +1855,7 @@ def cmd_import(args, ifmt, ofmt):
 
     source = os.path.basename(path)
     new_rows = [person_to_row(p, source) for p in people]
+    _stamp_import_date(new_rows, run_date)
     _merge_and_write(args, new_rows, ofmt)
 
 
@@ -1666,9 +1886,10 @@ def cmd_export(args, ofmt):
 
 
 def cmd_db(args, ofmt):
-    """Operate on a native contacts DB (json/csv/xlsx -> json/csv/xlsx): convert
-    or copy through, and/or --merge the input into the existing output DB, and/or
-    --dedup the result."""
+    """Fold a native contacts DB (json/csv/xlsx) into the existing output DB,
+    never wiping it (--force overwrites overlapping fields), optionally filtering
+    the input by domain and/or --dedup-ing the result. A missing output file is
+    created fresh. When input and output are the same file, this normalizes it."""
     whitelist, blacklist = load_domain_filters(args)
     rows = load_rows(args.input)
     if not rows:
@@ -1683,36 +1904,29 @@ def cmd_db(args, ofmt):
     if outdir:
         os.makedirs(outdir, exist_ok=True)
 
-    n_input = len(rows)
-    n_existing = n_new = 0
-    if args.merge:
-        # Fold the input DB into the existing output DB as a batch.
-        existing = _read_existing_contacts(out_path, ofmt)
-        n_existing = len(existing)
-        n_new, _ = _fold_into(existing, rows)
-        rows = list(existing.values())
+    # Fold the (filtered) input into the existing output DB; a missing output
+    # starts empty (fresh write).
+    existing = _read_existing_contacts(out_path, ofmt)
+    n_existing = len(existing)
+    n_new, n_updated = _fold_into(existing, rows, force=args.force)
+    rows = list(existing.values())
     if args.dedup:
         rows = dedup_contacts(rows)
     rows = sorted(rows, key=_contact_sort_key)
     write_contacts_as(out_path, rows, ofmt)
 
-    if args.merge:
-        extra = " then deduped" if args.dedup else ""
-        sys.stderr.write(
-            f"\nMerged into {out_path}{extra}\n"
-            f"  {n_existing:,} existing + {n_new:,} new from "
-            f"{os.path.basename(args.input)} = {len(rows):,} contacts.\n")
-    elif args.dedup:
-        sys.stderr.write(
-            f"Deduped {n_input:,} rows -> {len(rows):,} contacts "
-            f"({n_input - len(rows):,} merged away) -> {out_path}\n")
-    else:
-        sys.stderr.write(f"Wrote {len(rows):,} contacts -> {out_path}\n")
+    extra = " then deduped" if args.dedup else ""
+    sys.stderr.write(
+        f"\nWrote {out_path}{extra}\n"
+        f"  {n_existing:,} existing + {n_new:,} new from "
+        f"{os.path.basename(args.input)} = {len(rows):,} contacts "
+        f"({n_updated:,} updated).\n")
 
 
 # Recognized file formats. JSON is the native database; the rest are import
 # sources / export targets. "outlook" is the Outlook/Google CSV column layout.
-FORMATS = ["json", "csv", "xlsx", "outlook", "vcard", "mbox", "pst", "jsonl"]
+FORMATS = ["json", "csv", "xlsx", "outlook", "vcard", "linkedin", "mbox", "pst",
+           "jsonl"]
 
 # How a file's format is inferred from its extension (unless --iformat/--oformat
 # overrides it). .csv/.xlsx default to the native layout; "outlook" must be asked
@@ -1736,10 +1950,11 @@ def parse_args(argv=None):
         prog="mc",
         description="mailcompiler: build and query a contacts database. The "
                     "operation is inferred from the -i/-o formats: a mailbox, "
-                    "vCard, or Outlook CSV input imports into a contacts DB "
-                    "(.json/.csv/.vcf); a JSON input exports (-o .csv/.vcf), "
-                    "deduplicates (-o .json --dedup), or merges databases "
-                    "(-o .json --merge).")
+                    "vCard, Outlook CSV, or LinkedIn export imports into a "
+                    "contacts DB; a JSON input exports (-o .csv/.vcf) or "
+                    "deduplicates (-o .json --dedup). Imports and DB writes "
+                    "always fold into the existing -o (never wiping it); pass "
+                    "--force to overwrite overlapping fields.")
     p.add_argument("-i", "--input", dest="input", required=True,
                    help="input path: a mailbox (.mbox/.pst), a vCard "
                         "(.vcf/.vcd), an Outlook CSV (--iformat outlook), or a "
@@ -1755,9 +1970,11 @@ def parse_args(argv=None):
                         "the extension; 'outlook' writes Outlook's CSV layout")
     p.add_argument("--dedup", action="store_true",
                    help="merge contacts sharing a first+last name (json -> json)")
-    p.add_argument("--merge", action="store_true",
-                   help="merge the import into an existing output DB (preserving "
-                        "manual edits) instead of overwriting it")
+    p.add_argument("--force", action="store_true",
+                   help="when an imported record overlaps an existing one, "
+                        "overwrite the existing text fields (company, title, "
+                        "name, ...) with the incoming values; by default existing "
+                        "(hand-edited) values are kept")
     p.add_argument("--llm", action="store_true",
                    help="dump a per-email JSONL corpus (subject/from/to/date/"
                         "body) from an mbox/PST instead of building the DB")
@@ -1769,6 +1986,9 @@ def parse_args(argv=None):
                    help="when importing a mailbox, also harvest the other To/Cc "
                         "recipients of mail you received (people on a thread with "
                         "you, not just the sender), counted as num_cc")
+    # Override the import_date stamp (default: today). Hidden; used by tests.
+    p.add_argument("--import-date", dest="import_date", metavar="YYYY-MM-DD",
+                   help=argparse.SUPPRESS)
     p.add_argument("--whitelist", dest="whitelist", metavar="PATH",
                    nargs="+", action="extend",
                    help="keep only contacts whose email domain matches an entry "
@@ -1826,15 +2046,18 @@ def main(argv=None):
             sys.exit("error: --llm requires an mbox or PST input")
         if ofmt != "jsonl":
             sys.exit("error: --llm writes a .jsonl corpus, so -o must be .jsonl")
-        if args.dedup or args.merge:
-            sys.exit("error: --llm cannot be combined with --dedup/--merge")
+        if args.dedup:
+            sys.exit("error: --llm cannot be combined with --dedup")
         return cmd_dump_llm(args, ifmt)
 
-    # Import: a mailbox / vCard / Outlook CSV builds contacts, written in the
-    # output format (.json DB, .csv, Outlook CSV, or .vcf).
-    if ifmt in ("mbox", "pst", "vcard", "outlook"):
+    # Import: a mailbox / vCard / Outlook CSV / LinkedIn export builds contacts,
+    # written in the output format (.json DB, .csv, Outlook CSV, or .vcf).
+    if ifmt in ("mbox", "pst", "vcard", "outlook", "linkedin"):
         if ofmt == "jsonl":
             sys.exit("error: a .jsonl corpus is produced only with --llm")
+        if ofmt not in DB_FORMATS and ifmt == "linkedin":
+            sys.exit("error: a LinkedIn import writes a contacts database; "
+                     "-o must be .json/.csv/.xlsx (not %s)" % ofmt)
         if args.dedup:
             sys.exit("error: --dedup applies to a json -> json database, not "
                      "an import; import to .json first, then dedup")
@@ -1844,13 +2067,13 @@ def main(argv=None):
     if ifmt in DB_FORMATS:
         if ofmt == "jsonl":
             sys.exit("error: a .jsonl corpus is produced only with --llm")
-        # --merge/--dedup are database operations: write a native DB format.
-        if args.merge or args.dedup:
+        if args.dedup:
             if ofmt not in DB_FORMATS:
-                sys.exit("error: --merge/--dedup produce a native database; "
+                sys.exit("error: --dedup produces a native database; "
                          "-o must be .json/.csv/.xlsx (not %s)" % ofmt)
             return cmd_db(args, ofmt)
-        # No DB op: convert/copy to a native DB (json), or filtered export.
+        # DB -> .json folds into the existing DB (never wipes it); DB -> other
+        # native formats / vCard / Outlook is a (filtered) export view.
         if ofmt == "json":
             return cmd_db(args, ofmt)
         return cmd_export(args, ofmt)   # csv/xlsx/outlook/vcard, with filters

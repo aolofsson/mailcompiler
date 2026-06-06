@@ -35,8 +35,9 @@ mc -i contacts.json --type customer -o leads.vcf   # filter + export (csv/xlsx/v
 ```
 
 There's one command, `mc`, and one JSON database. `mc` infers the operation from
-the `-i`/`-o` file extensions: a mailbox/vCard/CSV/XLSX in **imports**; a JSON DB
-in **exports** (or `--dedup`/`--merge`). The rest of this README is the details.
+the `-i`/`-o` file extensions: a mailbox/vCard/CSV/XLSX/LinkedIn in **imports**;
+a JSON DB in **exports** (or `--dedup`). Imports always fold into the existing
+`-o` (never wiping it). The rest of this README is the details.
 
 ## Installation
 
@@ -87,9 +88,17 @@ Import an Outlook / Google Contacts CSV export (`--iformat outlook`):
 
     mc -i contacts.csv --iformat outlook -o data/contacts.json
 
-Merge a new import into an existing DB, preserving manual edits:
+Enrich the DB from a LinkedIn Connections export (`--iformat linkedin`):
+overwrites company/title (LinkedIn is the authority on current employer), adds
+the profile URL, adds new connections, and stamps `import_date`:
 
-    mc -i archive.pst -o data/contacts.json --merge
+    mc -i Connections.csv --iformat linkedin -o data/contacts.json
+
+Imports always fold into the existing `-o` DB (they never wipe it); manual edits
+are preserved unless you pass `--force` to overwrite overlapping fields:
+
+    mc -i archive.pst -o data/contacts.json           # adds to the existing DB
+    mc -i archive.pst -o data/contacts.json --force   # let the import win on conflicts
 
 Exclude whole domains while importing:
 
@@ -127,15 +136,15 @@ Deduplicate contacts sharing a first+last name, rewriting in place:
 
 Merge one database into another (folding `extra.json` into `data/contacts.json`):
 
-    mc -i extra.json -o data/contacts.json --merge
+    mc -i extra.json -o data/contacts.json
 
 ## MC Help
 
 ```
 usage: mc [-h] -i INPUT -o OUTPUT
-          [--iformat {json,csv,xlsx,outlook,vcard,mbox,pst,jsonl}]
-          [--oformat {json,csv,xlsx,outlook,vcard,mbox,pst,jsonl}] [--dedup] [--merge]
-          [--llm] [--max-body BYTES] [--include-cc] [--whitelist PATH [PATH ...]]
+          [--iformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}]
+          [--oformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}] [--dedup]
+          [--force] [--llm] [--max-body BYTES] [--include-cc] [--whitelist PATH [PATH ...]]
           [--blacklist PATH [PATH ...]] [--type TYPE] [--company COMPANY]
           [--first-name FIRST_NAME] [--last-name LAST_NAME]
           [--email-domain EMAIL_DOMAIN] [--min-emails MIN_EMAILS]
@@ -152,15 +161,17 @@ options:
   -o OUTPUT, --output OUTPUT
                         output path: a .json contacts DB, a .csv/.vcf export, or a .jsonl
                         corpus (with --llm)
-  --iformat {json,csv,xlsx,outlook,vcard,mbox,pst,jsonl}
+  --iformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}
                         force the input format instead of inferring it from the extension;
-                        'outlook' reads an Outlook/Google CSV
-  --oformat {json,csv,xlsx,outlook,vcard,mbox,pst,jsonl}
+                        'outlook' reads an Outlook/Google CSV; 'linkedin' reads a LinkedIn
+                        Connections export
+  --oformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}
                         force the output format instead of inferring it from the
                         extension; 'outlook' writes Outlook's CSV layout
   --dedup               merge contacts sharing a first+last name (json -> json)
-  --merge               merge the import into an existing output DB (preserving manual
-                        edits) instead of overwriting it
+  --force               when an imported record overlaps an existing one, overwrite the
+                        existing text fields (company, title, name, ...) with the incoming
+                        values; by default existing (hand-edited) values are kept
   --llm                 dump a per-email JSONL corpus (subject/from/to/date/body) from an
                         mbox/PST instead of building the DB
   --max-body BYTES      --llm: cap each message body to BYTES (default 262144; 0 =
@@ -231,7 +242,9 @@ fields, in this order:
   "num_cc": 0,
   "first_interaction": "2023-01-01",
   "last_interaction": "2025-03-15",
-  "source": "work.mbox | takeout.mbox"
+  "source": "work.mbox | takeout.mbox",
+  "linkedin": "https://www.linkedin.com/in/jordanvale",
+  "import_date": "2026-06-06"
 }
 ```
 
@@ -254,6 +267,8 @@ fields, in this order:
 | `first_interaction` | string\|null | Earliest interaction date (`YYYY-MM-DD`), or `null` if unknown. |
 | `last_interaction` | string\|null | Latest interaction date (`YYYY-MM-DD`), or `null` if unknown. |
 | `source` | string | Origin file(s) the record came from, joined by ` \| `. |
+| `linkedin` | string | LinkedIn profile URL; set by a LinkedIn import (`--iformat linkedin`), otherwise blank. |
+| `import_date` | string | Date (`YYYY-MM-DD`) of the most recent non-database import (mbox/PST/vCard/Outlook/LinkedIn) that touched this record; blank for purely database-derived rows. |
 
 The four annotation columns (`type`, `friend`, `title`, `address`) are left
 blank on a mailbox import for you to fill in by hand; they are preserved across
@@ -293,9 +308,9 @@ email counts are left blank/0. See `mc -h` for all options.
 
 Importing a **vCard** adds its contacts directly (no message filtering): it maps
 N/FN, ORG, TITLE, TEL, ADR, every EMAIL, and `CATEGORIES` (a category matching a
-legal `type` value sets the type; a `friend` category sets the friend flag). With
-`--merge` this folds into an existing database like any other import, so you can
-combine a vCard export with an mbox-built database.
+legal `type` value sets the type; a `friend` category sets the friend flag). Like
+any import it folds into the existing database, so you can combine a vCard export
+with an mbox-built database.
 
 ### What gets imported
 
@@ -363,26 +378,65 @@ darpa.mil
 (`-o .csv/.xlsx/.vcf/.json`); whitelist keeps matches, blacklist then removes
 any that should still be dropped.
 
-### Merge vs overwrite
+### Merging (the default) and `--force`
 
-By default an import **overwrites** the output file. Pass `--merge` to fold the
-import into an existing database instead (in whichever format the output path
-uses). For an existing contact, the counts (`num_emails`, `num_sent`,
-`num_received`, `num_cc`) are overwritten with the latest import, the email list is
-unioned, and the interaction date range widens; hand-edited fields (the blank
-annotation columns `type`/`friend`/`title`/`address`, plus name/company) are
-preserved. Contacts present only in the old file are left untouched. This lets
-you re-run as a mailbox grows, or accumulate multiple mailboxes, without losing
-manual annotations:
+An import (and a DB&nbsp;->&nbsp;`.json` write) **always folds into the existing
+output DB -- it never wipes it.** A missing output file is created fresh; an
+existing one is read, merged into, and written back. There is no separate
+"overwrite the whole file" mode: to start over, delete the file (or point `-o` at
+a new path).
+
+For an existing contact, the counts (`num_emails`, `num_sent`, `num_received`,
+`num_cc`) are overwritten with the latest import, the email list is unioned, the
+interaction date range widens, and `import_date` updates. Hand-edited text fields
+(`type`/`friend`/`title`/`address`, plus name/company/phone) are **preserved** by
+default -- the import only fills a blank. Pass **`--force`** to let the incoming
+non-empty values **overwrite** those fields instead. Contacts present only in the
+old file are always kept.
 
 ```bash
-mc -i archive.pst -o data/contacts.json --merge   # fold into the existing DB
+mc -i archive.pst -o data/contacts.json            # fold in; keep manual edits
+mc -i archive.pst -o data/contacts.json --force    # let the import win on conflicts
+mc -i extra.json  -o data/contacts.json            # fold one DB into another
 ```
 
-Imported rows include blank columns for you to fill in by hand: `type` (one of
-`customer`, `competitor`, `investor`, `reporter`, `partner`, `vendor`, `other`),
-`friend`, `title`, and `address`. `--merge` also folds one JSON database into
-another (`mc -i extra.json -o data/contacts.json --merge`).
+This lets you re-run as a mailbox grows, or accumulate multiple sources, without
+losing manual annotations. Imported rows include blank columns for you to fill in
+by hand: `type` (one of `customer`, `competitor`, `investor`, `reporter`,
+`partner`, `vendor`, `other`), `friend`, `title`, and `address`.
+
+(Records are matched by email, or by LinkedIn profile URL when there is no email,
+so email-less LinkedIn contacts survive a merge.)
+
+### Importing from LinkedIn
+
+A LinkedIn **Connections** export (`Settings -> Data privacy -> Get a copy of
+your data -> Connections`) is the authority on a contact's *current* employer and
+title. Import it with `--iformat linkedin` (the `.csv` extension alone is
+ambiguous, so the format is explicit, like `outlook`); it folds into your existing
+DB:
+
+```bash
+mc -i Connections.csv --iformat linkedin -o data/contacts.json
+```
+
+How it differs from a normal merge:
+
+- **Matching:** by profile **URL**, then **email**, then normalized **first+last
+  name** (LinkedIn omits most emails, so names do most of the work). A name that
+  matches more than one existing contact is **skipped** (reported), not guessed.
+- **Authority:** on a match, `company` and `title` are **overwritten** from
+  LinkedIn (a normal merge would preserve them). The profile URL is stored in
+  `linkedin`.
+- **New connections are added** as contacts (most have no email -- they are
+  identified by their LinkedIn URL). A connection with neither an email nor a URL
+  is skipped (nothing to key it by).
+- **`import_date`** is set to the date you run `mc` (use it later to reason about
+  how fresh a contact's company is). It is stamped on every non-database import
+  (mbox, PST, vCard, Outlook, LinkedIn), and left blank for database-only rows.
+
+Re-running the same export is idempotent (URL/email matches refresh in place
+rather than duplicating).
 
 ### Dump for an LLM
 
