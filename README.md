@@ -1,16 +1,15 @@
 ![MailCompiler](docs/postverket.svg)
 
-Turn your email archive into a contact list you own. MailCompiler imports your
-`.mbox`/`.pst` into a clean, human-readable JSON database and converts between
-vCard and CSV.
+> Own your inbox. Own your network.
+
+![Mailcompiler Architecture](docs/mc_arch.png)
 
 ## Motivation
-- It's getting increasinly more important to own and protect your data!
-- Manually scraping inboxes to put together outreach lists is a waste of life.
-- Email client search functiosn are completely useless.
-- Email client import/output is are different shades of broken.
-
-See [docs/mc_arch.svg](docs/mc_arch.svg) for a diagram of all conversions to and from the JSON contacts database.
+- You need to own your data!
+- Your network is valuable don't loose it!
+- Email client search functions are useless.
+- Email client export/import are lossy.
+- Scraping old email inboxes to recover contacts is a waste of life.
 
 ## Key features
 - Clean human readable JSON contact database
