@@ -1,0 +1,524 @@
+category,company,domain
+Aerospace,Astranis,astranis.com
+Aerospace,Blueorigin,blueorigin.com
+Aerospace,Bombardier,bombardier.com
+Aerospace,Caes,caes.com
+Aerospace,Collins Aerospace,collinsaerospace.com
+Aerospace,Dassault Aviation,dassault-aviation.com
+Aerospace,Embraer,embraer.com
+Aerospace,Frontgrade Technologies,frontgrade.com
+Aerospace,GE Aerospace,geaerospace.com
+Aerospace,GKN Aerospace,gknaerospace.com
+Aerospace,Intelsat,intelsat.com
+Aerospace,Iridium,iridium.com
+Aerospace,Maxar,maxar.com
+Aerospace,MTU Aero Engines,mtu.de
+Aerospace,Planet,planet.com
+Aerospace,Pratt & Whitney,prattwhitney.com
+Aerospace,Redwirespace,redwirespace.com
+Aerospace,Relativityspace,relativityspace.com
+Aerospace,Rocketlabusa,rocketlabusa.com
+Aerospace,Rolls-Royce,rolls-royce.com
+Aerospace,Safran,safran-group.com
+Aerospace,Ses,ses.com
+Aerospace,Sierraspace,sierraspace.com
+Aerospace,Spacex,spacex.com
+Aerospace,Spirit AeroSystems,spiritaero.com
+Aerospace,Terranorbital,terranorbital.com
+Aerospace,Viasat,viasat.com
+ASIC,Alchip,alchip.com
+ASIC,Alphawavesemi,alphawavesemi.com
+ASIC,eInfochips (An Arrow Company),einfochips.com
+ASIC,Faraday-tech,faraday-tech.com
+ASIC,GUC,guc-asic.com
+ASIC,Socionext,socionext.com
+ASIC,Sondrel,sondrel.com
+Automotive,Aisin,aisin.com
+Automotive,Aptiv,aptiv.com
+Automotive,Autoliv,autoliv.com
+Automotive,BMW,bmwgroup.com
+Automotive,Borgwarner,borgwarner.com
+Automotive,Bosch,bosch.com
+Automotive,Continental,continental.com
+Automotive,Denso,denso.com
+Automotive,Ford,ford.com
+Automotive,Forvia,forvia.com
+Automotive,Garrett Motion,garrettmotion.com
+Automotive,Gm,gm.com
+Automotive,Harman,harman.com
+Automotive,Hella,hella.com
+Automotive,Honda,honda.com
+Automotive,Hyundai,hyundai.com
+Automotive,Hyundai Mobis,mobis.com
+Automotive,Lear,lear.com
+Automotive,Lucidmotors,lucidmotors.com
+Automotive,Luminar,luminartech.com
+Automotive,Magna,magna.com
+Automotive,Mahle,mahle.com
+Automotive,Marelli,marelli.com
+Automotive,Mercedes Benz,mercedes-benz.com
+Automotive,Nissan,nissan-global.com
+Automotive,Rivian,rivian.com
+Automotive,Schaeffler,schaeffler.com
+Automotive,Sensata Technologies,sensata.com
+Automotive,Stellantis,stellantis.com
+Automotive,Tesla,tesla.com
+Automotive,Toyota,toyota.com
+Automotive,Valeo,valeo.com
+Automotive,Veoneer,veoneer.com
+Automotive,Volkswagen,volkswagen.com
+Automotive,Yazaki,yazaki-group.com
+Automotive,ZF,zf.com
+Components,Amphenol,amphenol.com
+Components,Bel Fuse,belfuse.com
+Components,Bourns,bourns.com
+Components,Hirose,hirose.com
+Components,KEMET,kemet.com
+Components,Kyocera,kyocera.com
+Components,Littelfuse,littelfuse.com
+Components,Molex,molex.com
+Components,Murata,murata.com
+Components,Nichicon,nichicon.com
+Components,Samsung Electro-Mechanics,samsungsem.com
+Components,Samtec,samtec.com
+Components,TDK,tdk.com
+Components,TE Connectivity,te.com
+Components,Wurth Elektronik,we-online.com
+Components,Yageo,yageo.com
+Connectors,JST,jst-mfg.com
+Connectors,Phoenix Contact,phoenixcontact.com
+Consumer Electronics,Acer,acer.com
+Consumer Electronics,Anker,anker.com
+Consumer Electronics,Asus,asus.com
+Consumer Electronics,Bang & Olufsen,bang-olufsen.com
+Consumer Electronics,Belkin,belkin.com
+Consumer Electronics,Bose,bose.com
+Consumer Electronics,Dyson,dyson.com
+Consumer Electronics,Fitbit,fitbit.com
+Consumer Electronics,Fujifilm,fujifilm.com
+Consumer Electronics,Garmin,garmin.com
+Consumer Electronics,Gigabyte,gigabyte.com
+Consumer Electronics,GoPro,gopro.com
+Consumer Electronics,Hisense,hisense.com
+Consumer Electronics,HTC,htc.com
+Consumer Electronics,iRobot,irobot.com
+Consumer Electronics,JVCKenwood,jvckenwood.com
+Consumer Electronics,Lenovo,lenovo.com
+Consumer Electronics,LG Electronics,lge.com
+Consumer Electronics,Logitech,logitech.com
+Consumer Electronics,Motorola,motorola.com
+Consumer Electronics,Nintendo,nintendo.com
+Consumer Electronics,OnePlus,oneplus.com
+Consumer Electronics,Razer,razer.com
+Consumer Electronics,Roku,roku.com
+Consumer Electronics,Sennheiser,sennheiser.com
+Consumer Electronics,Sharp,sharp.co.jp
+Consumer Electronics,Sonos,sonos.com
+Consumer Electronics,Sound United,soundunited.com
+Consumer Electronics,TCL,tcl.com
+Consumer Electronics,Vizio,vizio.com
+Consumer Electronics,Xiaomi,xiaomi.com
+Consumer Electronics,Yamaha,yamaha.com
+Datacenter,ASRock Rack,asrockrack.com
+Datacenter,Dell,dell.com
+Datacenter,Eviden (Atos),eviden.com
+Datacenter,HPE,hpe.com
+Datacenter,Inspur,inspur.com
+Datacenter,NEC,nec.com
+Datacenter,Netapp,netapp.com
+Datacenter,Penguin Solutions,penguinsolutions.com
+Datacenter,Purestorage,purestorage.com
+Datacenter,Quanta (QCT),qct.io
+Datacenter,Supermicro,supermicro.com
+Datacenter,Wiwynn,wiwynn.com
+Defense,AeroVironment,avinc.com
+Defense,Airbus,airbus.com
+Defense,Anduril Industries,anduril.com
+Defense,Applied Intuition,appliedintuition.com
+Defense,BAE,baesystems.com
+Defense,Boeing,boeing.com
+Defense,Booz Allen Hamilton,bah.com
+Defense,CACI,caci.com
+Defense,Curtiss-Wright,curtisswright.com
+Defense,Elbit Systems,elbitsystems.com
+Defense,Epirus,epirus.com
+Defense,General Atomics,ga.com
+Defense,General Dynamics,gd.com
+Defense,Hadrian,hadrian.co
+Defense,Helsing,helsing.ai
+Defense,Honeywell,honeywell.com
+Defense,Huntingtoningalls,huntingtoningalls.com
+Defense,Israel Aerospace Industries,iai.co.il
+Defense,Kratos Defense,kratosdefense.com
+Defense,L3Harris Technologies,l3harris.com
+Defense,Leidos,leidos.com
+Defense,Leonardo,leonardo.com
+Defense,Lockheed Martin,lockheedmartin.com
+Defense,Mercury Systems,mrcy.com
+Defense,Moog,moog.com
+Defense,Northrop Grumman,northropgrumman.com
+Defense,Palantir Technologies,palantir.com
+Defense,Rafael,rafael.co.il
+Defense,Rheinmetall,rheinmetall.com
+Defense,RTX,rtx.com
+Defense,Saab,saabgroup.com
+Defense,SAIC,saic.com
+Defense,Saronic,saronic.com
+Defense,Shield AI,shield.ai
+Defense,Skydio,skydio.com
+Defense,Textron Systems,textron.com
+Defense,Thales Group,thalesgroup.com
+Defense,Vannevar Labs,vannevarlabs.com
+Distribution,Allied Electronics & Automation,alliedelec.com
+Distribution,Arrow Electronics,arrow.com
+Distribution,Avnet,avnet.com
+Distribution,Digi-Key,digikey.com
+Distribution,Future Electronics,futureelectronics.com
+Distribution,Heilind Electronics,heilind.com
+Distribution,Macnica,macnica.com
+Distribution,Master Electronics,masterelectronics.com
+Distribution,Mouser Electronics,mouser.com
+Distribution,Newark / Farnell,farnell.com
+Distribution,RS Group,rsgroup.com
+Distribution,Rutronik,rutronik.com
+Distribution,Sager Electronics,sager.com
+Distribution,TTI Inc,ttiinc.com
+Distribution,WPG Holdings,wpgholdings.com
+Distribution,WT Microelectronics,wtmec.com
+EMS,Celestica,celestica.com
+EMS,Flex,flex.com
+EMS,Foxconn,foxconn.com
+EMS,Jabil,jabil.com
+EMS,Pegatron,pegatron.com
+EMS,Sanmina,sanmina.com
+EMS,Wistron,wistron.com
+Energy,Bloom Energy,bloomenergy.com
+Energy,ChargePoint,chargepoint.com
+Energy,Enphase Energy,enphase.com
+Energy,First Solar,firstsolar.com
+Energy,Fluence Energy,fluenceenergy.com
+Energy,GE Vernova,gevernova.com
+Energy,Generac,generac.com
+Energy,Siemens Energy,siemens-energy.com
+Energy,SMA Solar,sma.de
+Energy,SolarEdge,solaredge.com
+Energy,Sunrun,sunrun.com
+Energy,Vestas,vestas.com
+Government,Airforce,af.mil
+Government,Argonne,anl.gov
+Government,Army,army.mil
+Government,Coast Guard,uscg.mil
+Government,DARPA,darpa.mil
+Government,DIU,diu.mil
+Government,DLA,dla.mil
+Government,DoD,defense.gov
+Government,DOE,energy.gov
+Government,IARPA,iarpa.gov
+Government,LANL,lanl.gov
+Government,LBL,lbl.gov
+Government,LLNL,llnl.gov
+Government,Marines,marines.mil
+Government,MDA,mda.mil
+Government,NASA,nasa.gov
+Government,Navy,navy.mil
+Government,NIST,nist.gov
+Government,NSA,nsa.gov
+Government,NSF,nsf.gov
+Government,ORNL,ornl.gov
+Government,PNNL,pnnl.gov
+Government,Sandia,sandia.gov
+Government,Space Force,spaceforce.mil
+Government,SRC,src.org
+Hyperscalers,Amazon,amazon.com
+Hyperscalers,Apple,apple.com
+Hyperscalers,Google,google.com
+Hyperscalers,IBM,ibm.com
+Hyperscalers,Meta,meta.com
+Hyperscalers,Microsoft,microsoft.com
+Hyperscalers,Oracle,oracle.com
+Industrial,ABB,abb.com
+Industrial,Acuity Brands,acuitybrands.com
+Industrial,Axis Communications,axis.com
+Industrial,Balluff,balluff.com
+Industrial,Banner Engineering,bannerengineering.com
+Industrial,Basler,baslerweb.com
+Industrial,Beckhoff Automation,beckhoff.com
+Industrial,Cognex,cognex.com
+Industrial,Dahua Technology,dahuatech.com
+Industrial,Danaher,danaher.com
+Industrial,Datalogic,datalogic.com
+Industrial,Eaton,eaton.com
+Industrial,Emerson,emerson.com
+Industrial,Fanuc,fanuc.co.jp
+Industrial,Festo,festo.com
+Industrial,GE,ge.com
+Industrial,Hanwha Vision,hanwhavision.com
+Industrial,Hikvision,hikvision.com
+Industrial,Hitachi,hitachi.com
+Industrial,ifm electronic,ifm.com
+Industrial,Keyence,keyence.com
+Industrial,Kuka,kuka.com
+Industrial,Lumileds,lumileds.com
+Industrial,Motorola Solutions,motorolasolutions.com
+Industrial,Nichia,nichia.co.jp
+Industrial,Omron,omron.com
+Industrial,Parker,parker.com
+Industrial,Particle,particle.io
+Industrial,Pepperl+Fuchs,pepperl-fuchs.com
+Industrial,Rockwell Automation,rockwellautomation.com
+Industrial,Samsara,samsara.com
+Industrial,Schneider Electric,schneider-electric.com
+Industrial,SICK,sick.com
+Industrial,Signify,signify.com
+Industrial,Teledyne,teledyne.com
+Industrial,Telit Cinterion,telit.com
+Industrial,Turck,turck.com
+Industrial,Verkada,verkada.com
+Industrial,Yaskawa,yaskawa.com
+Industrial,Zebra Technologies,zebra.com
+Medical Devices,Abbott,abbott.com
+Medical Devices,Baxter,baxter.com
+Medical Devices,Boston Scientific,bostonscientific.com
+Medical Devices,Dexcom,dexcom.com
+Medical Devices,GE Healthcare,gehealthcare.com
+Medical Devices,Intuitive,intuitive.com
+Medical Devices,Medtronic,medtronic.com
+Medical Devices,Philips,philips.com
+Medical Devices,Stryker,stryker.com
+Networking & Telecom,Adtran,adtran.com
+Networking & Telecom,Arista,arista.com
+Networking & Telecom,Calix,calix.com
+Networking & Telecom,Ciena,ciena.com
+Networking & Telecom,Cisco,cisco.com
+Networking & Telecom,Commscope,commscope.com
+Networking & Telecom,Ericsson,ericsson.com
+Networking & Telecom,Fortinet,fortinet.com
+Networking & Telecom,Infinera,infinera.com
+Networking & Telecom,Juniper,juniper.net
+Networking & Telecom,Nokia,nokia.com
+Networking & Telecom,Palo Alto Networks,paloaltonetworks.com
+Semiconductor Devices,Achronix,achronix.com
+Semiconductor Devices,Advanced Micro Devices,amd.com
+Semiconductor Devices,Allegro Microsystems,allegromicro.com
+Semiconductor Devices,Altera,altera.com
+Semiconductor Devices,Ambarella,ambarella.com
+Semiconductor Devices,Analog Devices,analog.com
+Semiconductor Devices,Broadcom,broadcom.com
+Semiconductor Devices,Cerebras,cerebras.net
+Semiconductor Devices,Cirrus,cirrus.com
+Semiconductor Devices,Coherent,coherent.com
+Semiconductor Devices,Diodes,diodes.com
+Semiconductor Devices,Efinix,efinixinc.com
+Semiconductor Devices,Epson,epson.com
+Semiconductor Devices,Fujitsu,fujitsu.com
+Semiconductor Devices,Groq,groq.com
+Semiconductor Devices,Himax,himax.com
+Semiconductor Devices,Holtek,holtek.com
+Semiconductor Devices,Infineon,infineon.com
+Semiconductor Devices,Issi,issi.com
+Semiconductor Devices,Kingston,kingston.com
+Semiconductor Devices,Kioxia,kioxia.com
+Semiconductor Devices,Lattice Semiconductor Devices,latticesemi.com
+Semiconductor Devices,Macom,macom.com
+Semiconductor Devices,Macronix,macronix.com
+Semiconductor Devices,Marvell,marvell.com
+Semiconductor Devices,MaxLinear,maxlinear.com
+Semiconductor Devices,Mediatek,mediatek.com
+Semiconductor Devices,Melexis,melexis.com
+Semiconductor Devices,Microchip,microchip.com
+Semiconductor Devices,Micron,micron.com
+Semiconductor Devices,Mitsubishi Electric,mitsubishielectric.com
+Semiconductor Devices,Mobileye,mobileye.com
+Semiconductor Devices,Monolithic Power,monolithicpower.com
+Semiconductor Devices,Nanya,nanya.com
+Semiconductor Devices,Navitas,navitas.com
+Semiconductor Devices,Nexperia,nexperia.com
+Semiconductor Devices,Nordicsemi,nordicsemi.com
+Semiconductor Devices,Novatek,novatek.com.tw
+Semiconductor Devices,Nuvoton,nuvoton.com
+Semiconductor Devices,Nvidia,nvidia.com
+Semiconductor Devices,NXP,nxp.com
+Semiconductor Devices,Onsemi,onsemi.com
+Semiconductor Devices,Panasonic,panasonic.com
+Semiconductor Devices,Phison,phison.com
+Semiconductor Devices,Power,power.com
+Semiconductor Devices,Powerchip,powerchip.com
+Semiconductor Devices,Qorvo,qorvo.com
+Semiconductor Devices,Qualcomm,qualcomm.com
+Semiconductor Devices,Quicklogic,quicklogic.com
+Semiconductor Devices,Realtek,realtek.com
+Semiconductor Devices,Renesas,renesas.com
+Semiconductor Devices,Rohm,rohm.com
+Semiconductor Devices,Samsung Electronics,samsung.com
+Semiconductor Devices,Sandisk,sandisk.com
+Semiconductor Devices,Seagate,seagate.com
+Semiconductor Devices,Semtech,semtech.com
+Semiconductor Devices,SiFive,sifive.com
+Semiconductor Devices,Silicon Laboratories,silabs.com
+Semiconductor Devices,Silicon Motion,siliconmotion.com
+Semiconductor Devices,Sitime,sitime.com
+Semiconductor Devices,SK Hynix,skhynix.com
+Semiconductor Devices,Skyworks,skyworks.com
+Semiconductor Devices,Sony,sony.com
+Semiconductor Devices,ST Microelectronics,st.com
+Semiconductor Devices,Synaptics,synaptics.com
+Semiconductor Devices,Tenstorrent,tenstorrent.com
+Semiconductor Devices,Texas Instruments,ti.com
+Semiconductor Devices,Toshiba,toshiba.com
+Semiconductor Devices,Vicor,vicor.com
+Semiconductor Devices,Vishay,vishay.com
+Semiconductor Devices,Western Digital,westerndigital.com
+Semiconductor Devices,Winbond,winbond.com
+Semiconductor EDA & IP,Rambus,rambus.com
+Semiconductor EDA & IP,Aldec,aldec.com
+Semiconductor EDA & IP,Altium,altium.com
+Semiconductor EDA & IP,Ansys,ansys.com
+Semiconductor EDA & IP,ARM,arm.com
+Semiconductor EDA & IP,Cadence,cadence.com
+Semiconductor EDA & IP,CEVA,ceva-ip.com
+Semiconductor EDA & IP,Credo,credosemi.com
+Semiconductor EDA & IP,Dolphin-design,dolphin-design.com
+Semiconductor EDA & IP,Siemens EDA,siemens.com
+Semiconductor EDA & IP,Synopsys,synopsys.com
+Semiconductor EDA & IP,Zuken,zuken.com
+Semiconductor Equipment,Advantest,advantest.com
+Semiconductor Equipment,Aehr,aehr.com
+Semiconductor Equipment,Appliedmaterials,appliedmaterials.com
+Semiconductor Equipment,ASML,asm.com
+Semiconductor Equipment,ASML,asml.com
+Semiconductor Equipment,Axcelis,axcelis.com
+Semiconductor Equipment,Azenta,azenta.com
+Semiconductor Equipment,BESI,besi.com
+Semiconductor Equipment,Camtek,camtek.com
+Semiconductor Equipment,Canon,canon.com
+Semiconductor Equipment,Cohu,cohu.com
+Semiconductor Equipment,Disco,disco.co.jp
+Semiconductor Equipment,Ebara,ebara.com
+Semiconductor Equipment,Entegris,entegris.com
+Semiconductor Equipment,FormFactor,formfactor.com
+Semiconductor Equipment,Hitachi Hightech,hitachi-hightech.com
+Semiconductor Equipment,Ichor Systems,ichorsystems.com
+Semiconductor Equipment,KLA,kla.com
+Semiconductor Equipment,Kokusai,kokusai-electric.com
+Semiconductor Equipment,Kulicke and Soffa,kns.com
+Semiconductor Equipment,LAM,lamresearch.com
+Semiconductor Equipment,MKS,mksinst.com
+Semiconductor Equipment,Nikon,nikon.com
+Semiconductor Equipment,Novami,novami.com
+Semiconductor Equipment,Onto Innovation,ontoinnovation.com
+Semiconductor Equipment,TEL,tel.com
+Semiconductor Equipment,Teradyne,teradyne.com
+Semiconductor Equipment,Ulvac,ulvac.com
+Semiconductor Equipment,Veeco,veeco.com
+Semiconductor Manufacturing,Amkor Technology,amkor.com
+Semiconductor Manufacturing,Ams-osram,ams-osram.com
+Semiconductor Manufacturing,ASE,aseglobal.com
+Semiconductor Manufacturing,AT&S,ats.net
+Semiconductor Manufacturing,GlobalFoundries,globalfoundries.com
+Semiconductor Manufacturing,Ibiden,ibiden.com
+Semiconductor Manufacturing,JCET,jcetglobal.com
+Semiconductor Manufacturing,Kinsus,kinsus.com.tw
+Semiconductor Manufacturing,Nan Ya PCB,nanyapcb.com.tw
+Semiconductor Manufacturing,Shinko,shinko.co.jp
+Semiconductor Manufacturing,SPIL,spil.com.tw
+Semiconductor Manufacturing,Tower Semiconductor,towersemi.com
+Semiconductor Manufacturing,TSMC,tsmc.com
+Semiconductor Manufacturing,UMC,umc.com
+Semiconductor Manufacturing,Unimicron,unimicron.com
+Semiconductor Manufacturing,Wolfspeed,wolfspeed.com
+Test and Measurement,Agilent,agilent.com
+Test and Measurement,Anritsu,anritsu.com
+Test and Measurement,Bruker,bruker.com
+Test and Measurement,Chromaate,chromaate.com
+Test and Measurement,Exfo,exfo.com
+Test and Measurement,Fluke,fluke.com
+Test and Measurement,Fortive,fortive.com
+Test and Measurement,Hamamatsu,hamamatsu.com
+Test and Measurement,Jeol,jeol.com
+Test and Measurement,Keysight,keysight.com
+Test and Measurement,National Instruments,ni.com
+Test and Measurement,Rohde Schwarz,rohde-schwarz.com
+Test and Measurement,Spirent,spirent.com
+Test and Measurement,TEK,tek.com
+Test and Measurement,Thermo Fisher,thermofisher.com
+Test and Measurement,Yokogawa,yokogawa.com
+Test and Measurement,Zeiss,zeiss.com
+Trading,Akuna Capital,akunacapital.com
+Trading,Citadel Securities,citadelsecurities.com
+Trading,DRW,drw.com
+Trading,Flow Traders,flowtraders.com
+Trading,GTS,gtsx.com
+Trading,Headlands Technologies,headlandstech.com
+Trading,Hudson River Trading,hudsonrivertrading.com
+Trading,IMC Trading,imc.com
+Trading,Jane Street,janestreet.com
+Trading,Jump Trading,jumptrading.com
+Trading,Optiver,optiver.com
+Trading,PDT Partners,pdtpartners.com
+Trading,Quantlab,quantlab.com
+Trading,Renaissance Technologies,rentec.com
+Trading,Susquehanna (SIG),sig.com
+Trading,Tower Research Capital,tower-research.com
+Trading,Two Sigma,twosigma.com
+Trading,Virtu Financial,virtu.com
+Trading,XTX Markets,xtxmarkets.com
+Venture Capital,8VC,8vc.com
+Venture Capital,AlleyCorp,alleycorp.com
+Venture Capital,Andreessen Horowitz,a16z.com
+Venture Capital,Anzu Partners,anzupartners.com
+Venture Capital,Applied Ventures,appliedventures.com
+Venture Capital,Bain Capital,baincapital.com
+Venture Capital,Battery Ventures,battery.com
+Venture Capital,Berkeley SkyDeck Fund,skydeck.vc
+Venture Capital,Bessemer Venture Partners,bvp.com
+Venture Capital,Bosch Ventures,rbvc.com
+Venture Capital,BoxGroup,boxgroup.com
+Venture Capital,Cambium Capital,cambium.vc
+Venture Capital,Candou Ventures,candouventures.com
+Venture Capital,Celesta Capital,celestacap.com
+Venture Capital,Cerberus,cerberus.com
+Venture Capital,Coatue,coatue.com
+Venture Capital,DCVC,dcvc.com
+Venture Capital,Dell Technologies Capital,delltechnologies.com
+Venture Capital,Eclipse Ventures,eclipse.vc
+Venture Capital,Encoded Ventures,encoded.vc
+Venture Capital,Foundation Capital,foundationcapital.com
+Venture Capital,Founders Fund,foundersfund.com
+Venture Capital,Fundomo,fundomo.com
+Venture Capital,General Catalyst,generalcatalyst.com
+Venture Capital,Google Ventures,gv.com
+Venture Capital,Inflection,inflection.fund
+Venture Capital,Insight Partners,insightpartners.com
+Venture Capital,Intel Capital,intelcapital.com
+Venture Capital,J2 Ventures,j2vp.com
+Venture Capital,Khosla Ventures,khoslaventures.com
+Venture Capital,Kleiner Perkins,kleinerperkins.com
+Venture Capital,Korea Development Bank,kdb.co.kr
+Venture Capital,Lavrock Ventures,lavrockvc.com
+Venture Capital,Lightspeed Venture Partners,lsvp.com
+Venture Capital,Lux Capital,luxcapital.com
+Venture Capital,M Ventures,m-ventures.com
+Venture Capital,Matrix,matrix.vc
+Venture Capital,Matter Venture Partners,mattervp.com
+Venture Capital,Maverick Silicon,mavericksilicon.com
+Venture Capital,Mayfield,mayfield.com
+Venture Capital,Millennium Technology Value Partners,mtvlp.com
+Venture Capital,NEA,nea.com
+Venture Capital,New North Ventures,newnorthvc.com
+Venture Capital,Pioneer Fund,pioneerfund.vc
+Venture Capital,Playground Global,playground.global
+Venture Capital,Plug and Play,plugandplaytechcenter.com
+Venture Capital,Qualcomm Ventures,qualcommventures.com
+Venture Capital,Samsung Catalyst Fund,samsungcatalyst.com
+Venture Capital,Samsung Ventures,samsungventures.com
+Venture Capital,Sequoia Capital,sequoiacap.com
+Venture Capital,SkyRiver Ventures,skyriverventures.com
+Venture Capital,Soma Capital,somacap.com
+Venture Capital,Sony Innovation Fund,sonyinnovationfund.com
+Venture Capital,Summit Partners,summitpartners.com
+Venture Capital,Sutter Hill Ventures,shv.com
+Venture Capital,Triatomic Capital,triatomic.capital
+Venture Capital,Tyche Partners,tychepartners.com
+Venture Capital,Vargas Holding,vargasholding.com
+Venture Capital,Walden Catalyst,waldencatalyst.com
+Venture Capital,Walden International,waldenintl.com
