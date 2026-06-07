@@ -7,10 +7,9 @@
 ![MailCompiler Architecture](docs/mc_arch.png)
 
 ## Motivation
-- You need to own your data!
-- Your network is valuable, don't lose it!
-- Email client search functions are useless.
-- Email client export/import are lossy.
+- Your contact network is valuable, don't lose touch!
+- Don't let platforms control you, own your data!
+- Email client search functions are basically useless, we need a LLM friendly DB.
 - Scraping old email inboxes to recover contacts is a waste of life.
 
 ## Key features
