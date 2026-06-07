@@ -1683,6 +1683,7 @@ def _company_core(name):
     never merges distinct companies or abbreviations (Analog vs Analog Devices
     stay separate)."""
     s = re.sub(r"\(.*?\)", " ", (name or "").lower())   # drop (parentheticals)
+    s = re.split(r"[;,]", s)[0]                         # drop ", Dept"/", Inc."/", City ST"
     s = re.sub(r"[^\w\s&-]", " ", s, flags=re.UNICODE)  # drop punctuation
     toks = s.split()
     while toks and toks[-1] in _LEGAL_SUFFIXES:
@@ -1691,18 +1692,27 @@ def _company_core(name):
 
 
 def _pick_primary(record):
-    """Pick the primary email: prefer one whose domain maps to the record's
-    company, else keep the current primary if still present, else emails[0]."""
+    """Pick the primary email. When the record has a company, prefer an address
+    whose domain maps to it; failing that, prefer a personal address (stable
+    across jobs); failing that, return "" -- the only remaining addresses are
+    former-employer corporate ones that no longer match the company and would
+    likely bounce, so a blank primary is better than a bouncing one (the contact
+    is anchored by name, not email). With no company we cannot judge a mismatch,
+    so keep the current primary if present, else emails[0]."""
     emails = record.get("emails") or []
     if not emails:
         return record.get("primary_email", "") or ""
     company = _norm_company(record.get("company", ""))
     if company:
-        for e in emails:
+        for e in emails:                        # 1. domain maps to the company
             cf = _norm_company(company_from(e))
             if cf and (cf == company
                        or (len(cf) >= 4 and (cf in company or company in cf))):
                 return e
+        for e in emails:                        # 2. else a personal address
+            if _is_free(e):
+                return e
+        return ""                               # 3. only stale corporate left
     cur = record.get("primary_email") or ""
     if cur.lower() in (e.lower() for e in emails):
         return cur
@@ -1938,12 +1948,6 @@ def reconcile_contacts(rows, log=None):
             if log and str(r["company"]).strip():
                 log("fill company: %s = %s"
                     % (_record_label(r), r["company"]))
-        old_pe = r.get("primary_email") or ""
-        r["primary_email"] = _pick_primary(r)
-        if log and r["primary_email"] != old_pe:
-            log("pick primary: %s -> %s (%s)"
-                % (old_pe or "<none>", r["primary_email"] or "<none>",
-                   _record_label(r)))
         for fld in ("first_name", "last_name"):
             old = r.get(fld, "")
             new = _normalize_name(old)
@@ -1951,13 +1955,10 @@ def reconcile_contacts(rows, log=None):
                 log("normalize %s: %r -> %r (%s)"
                     % (fld, old, new, _record_label(r)))
             r[fld] = new
-        old_ph = r.get("phone", "")
-        r["phone"] = _normalize_phone(old_ph)
-        if log and r["phone"] != old_ph:
-            log("normalize phone: %r -> %r (%s)"
-                % (old_ph, r["phone"], _record_label(r)))
-        # recover a missing/initial-only surname from a personal email local-part
-        # (e.g. a blank or single-initial last name -> a full surname)
+        # recover a missing/initial-only surname from the email local-part (a
+        # blank or single-initial last name -> a full surname). Done BEFORE
+        # _pick_primary so a soon-to-be-blanked stale email can still supply the
+        # name.
         old_ln = r.get("last_name", "")
         new_ln = recover_surname_from_email(
             r.get("first_name", ""), old_ln, r.get("primary_email", ""))
@@ -1966,17 +1967,25 @@ def reconcile_contacts(rows, log=None):
                 log("recover surname: %s last %r -> %r (from email)"
                     % (_record_label(r), old_ln, new_ln))
             r["last_name"] = new_ln
+        old_ph = r.get("phone", "")
+        r["phone"] = _normalize_phone(old_ph)
+        if log and r["phone"] != old_ph:
+            log("normalize phone: %r -> %r (%s)"
+                % (old_ph, r["phone"], _record_label(r)))
+        old_pe = r.get("primary_email") or ""
+        r["primary_email"] = _pick_primary(r)
+        if log and r["primary_email"] != old_pe:
+            log("pick primary: %s -> %s (%s)"
+                % (old_pe or "<none>", r["primary_email"] or "<none>",
+                   _record_label(r)))
+        # the contact is anchored by name: keep any full-name record even with a
+        # blank email (a stale corporate primary is blanked by _pick_primary).
         has_name = (str(r.get("first_name") or "").strip()
                     and str(r.get("last_name") or "").strip())
-        has_contact = (r.get("primary_email")
-                       or str(r.get("linkedin") or "").strip())
         if not has_name:
             if log:
                 log("drop record: %s (missing first or last name)"
                     % _record_label(r))
-        elif not has_contact:
-            if log:
-                log("drop record: %s (no email and no linkedin)" % _record_label(r))
         else:
             out.append(r)
     _canonicalize_companies(out, log)
