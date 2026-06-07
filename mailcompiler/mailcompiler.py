@@ -591,7 +591,7 @@ def _native_cells(r):
 
 def write_csv_rows(path, rows):
     def _w(out):
-        w = csv.writer(out)
+        w = csv.writer(out, lineterminator="\n")
         w.writerow(CSV_FIELDS)
         for r in rows:
             w.writerow(_native_cells(r))
@@ -696,7 +696,7 @@ def write_outlook_csv(path, rows):
     """Write contacts in Outlook's CSV column layout (importable by Outlook and
     Google Contacts). Only the first three emails are kept (Outlook's limit)."""
     def _w(out):
-        w = csv.writer(out)
+        w = csv.writer(out, lineterminator="\n")
         w.writerow(OUTLOOK_FIELDS)
         for r in rows:
             w.writerow(_outlook_cells(r))
