@@ -1,7 +1,6 @@
 ![MailCompiler](docs/postverket.svg)
 
-**MailCompiler** (`mc`) is a single-command CLI that mines your mailboxes and
-address books (Gmail Takeout, Outlook archives, vCard, LinkedIn) and helps you consolidate the data into a single unified de-duplicated, human-readable JSON contact database that you control.
+**MailCompiler** (`mc`) is a single-command CLI that lkets you mine your mailboxes and address books (Gmail Takeout, Outlook archives, vCard, LinkedIn) and helps you consolidate all of the the data into a single unified de-duplicated, human-readable JSON contact database that you control.
 
 > Own your inbox. Own your network.
 
