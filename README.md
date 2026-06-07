@@ -1,30 +1,31 @@
 ![MailCompiler](docs/postverket.svg)
 
-**MailCompiler** (`mc`) is a single-command CLI that lkets you mine your mailboxes and address books (Gmail Takeout, Outlook archives, vCard, LinkedIn) and helps you consolidate all of the the data into a single unified de-duplicated, human-readable JSON contact database that you control.
+**MailCompiler** (`mc`) is a single-command CLI that lets you mine your mailboxes and address books (Gmail Takeout, Outlook archives, vCard, LinkedIn) and consolidate all of the data into a single, unified, de-duplicated, human-readable JSON contact database that you control.
 
 > Own your inbox. Own your network.
 
-![Mailcompiler Architecture](docs/mc_arch.png)
+![MailCompiler Architecture](docs/mc_arch.png)
 
 ## Motivation
 - You need to own your data!
-- Your network is valuable don't loose it!
+- Your network is valuable, don't lose it!
 - Email client search functions are useless.
 - Email client export/import are lossy.
 - Scraping old email inboxes to recover contacts is a waste of life.
 
 ## Key features
-- Clean human readable JSON contact database
+- Clean, human-readable JSON contact database
 - Fast import from Gmail Takeout `.mbox` and Outlook `.pst` (handles 20 GB+)
-- Import/export support for VCARD (3.0) and CSV (Outlook) contact lists
-- Lossless import/export between xls/csv files and JSON database
-- Streaming .mbox into LLM friendly JSON corpus
+- Import/export support for vCard 3.0 and CSV (Outlook) contact lists
+- Lossless import/export between xlsx/csv files and the JSON database
+- Streaming `.mbox` into an LLM-friendly JSON corpus
 - Automatic extraction of email conversations into contacts
 - Automatic extraction of phone numbers from email signatures
-- Incremental non-destructive merging of into a JSON database
+- Incremental, non-destructive merging into a JSON database
 - Deduplication and reconciliation of records
-- Black list email list support
-- Automatic filtering of bot farm email addresses
+- Automatic industry categorization from a built-in [yellowpages directory](mailcompiler/yellowpages.csv)
+- Blacklist support for email domains
+- Automatic filtering of bot-farm email addresses
 - Record filtering on export
 
 ## TL;DR
@@ -54,7 +55,7 @@ Build the JSON contacts database from a Gmail Takeout mbox and stash in $MC_DB:
 
     mc -i "All mail Including Spam and Trash.mbox"
 
-Direct extraction from Takeout mbox to an xlsx spreadsheet with explicit output location.
+Direct extraction from a Takeout mbox to an xlsx spreadsheet with an explicit output location:
 
     mc -i "All mail Including Spam and Trash.mbox" -o data/contacts.xlsx
 
@@ -62,7 +63,7 @@ Import an Outlook PST and stash in $MC_DB:
 
     mc -i archive.pst
 
-Convert a JSON contacts in $MC_DB to an excel spreadsheet
+Convert the JSON contacts in $MC_DB to an Excel spreadsheet:
 
     mc -o contacts.xlsx
 
@@ -96,7 +97,7 @@ Dump a per-email JSONL corpus for an LLM (no contacts DB):
 
 Export filtered contacts to a vCard:
 
-    mc -i data/contacts.json --type customer,investor -o leads.vcf
+    mc -i data/contacts.json --category "Semiconductor Devices,Defense" -o leads.vcf
 
 Export filtered contacts to CSV:
 
@@ -140,60 +141,73 @@ mc -o leads.xlsx                 # export: -i defaults to $MC_DB
 ## MC Help
 
 ```
-usage: mc [-h] -i INPUT -o OUTPUT
+usage: mc [-h] [-i INPUT] [-o OUTPUT]
           [--iformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}]
           [--oformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}]
-          [--reconcile] [--force] [--llm] [--max-body BYTES] [--no-cc]
-          [--whitelist PATH [PATH ...]]
-          [--blacklist PATH [PATH ...]] [--type TYPE] [--company COMPANY]
-          [--first-name FIRST_NAME] [--last-name LAST_NAME]
-          [--email-domain EMAIL_DOMAIN] [--min-emails MIN_EMAILS]
-          [--max-emails MAX_EMAILS] [--min-sent MIN_SENT] [--max-sent MAX_SENT]
+          [--reconcile] [-v] [--force] [--llm] [--max-body BYTES] [--no-cc]
+          [--whitelist PATH [PATH ...]] [--blacklist PATH [PATH ...]]
+          [--category CATEGORY] [--company COMPANY] [--first-name FIRST_NAME]
+          [--last-name LAST_NAME] [--email-domain EMAIL_DOMAIN]
+          [--min-emails MIN_EMAILS] [--max-emails MAX_EMAILS]
+          [--min-sent MIN_SENT] [--max-sent MAX_SENT]
           [--min-received MIN_RECEIVED] [--max-received MAX_RECEIVED]
           [--last-after YYYY-MM-DD] [--last-before YYYY-MM-DD]
           [--first-after YYYY-MM-DD] [--first-before YYYY-MM-DD]
 
+mailcompiler: build and query a contacts database. The operation is inferred
+from the -i/-o formats: a mailbox, vCard, Outlook CSV, or LinkedIn export
+imports into a contacts DB; a JSON input exports (-o .csv/.vcf) or reconciles
+(-o .json --reconcile). Imports and DB writes always fold into the existing -o
+(never wiping it); pass --force to overwrite overlapping fields.
+
 options:
   -h, --help            show this help message and exit
   -i INPUT, --input INPUT
-                        input path: a mailbox (.mbox/.pst), a vCard (.vcf/.vcd), an
-                        Outlook CSV (--iformat outlook), or a contacts .json.
-                        Defaults to $MC_DB if set.
+                        input path: a mailbox (.mbox/.pst), a vCard
+                        (.vcf/.vcd), an Outlook CSV (--iformat outlook), or a
+                        contacts .json. Defaults to $MC_DB if set.
   -o OUTPUT, --output OUTPUT
-                        output path: a .json contacts DB, a .csv/.vcf export, or a .jsonl
-                        corpus (with --llm). Defaults to $MC_DB if set.
+                        output path: a .json contacts DB, a .csv/.vcf export,
+                        or a .jsonl corpus (with --llm). Defaults to $MC_DB if
+                        set.
   --iformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}
-                        force the input format instead of inferring it from the extension;
-                        'outlook' reads an Outlook/Google CSV; 'linkedin' reads a LinkedIn
-                        Connections export
+                        force the input format instead of inferring it from
+                        the extension; 'outlook' reads an Outlook/Google CSV
   --oformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}
-                        force the output format instead of inferring it from the
-                        extension; 'outlook' writes Outlook's CSV layout
+                        force the output format instead of inferring it from
+                        the extension; 'outlook' writes Outlook's CSV layout
   --reconcile           clean and merge records (json -> json): drop junk/role
-                        addresses, merge duplicates by email and by name, recompute
-                        fields, and pick the best primary email
-  --force               when an imported record overlaps an existing one, overwrite the
-                        existing text fields (company, title, name, ...) with the incoming
-                        values; by default existing (hand-edited) values are kept
-  --llm                 dump a per-email JSONL corpus (subject/from/to/date/body) from an
-                        mbox/PST instead of building the DB
-  --max-body BYTES      --llm: cap each message body to BYTES (default 262144; 0 =
-                        unlimited) so attachment blobs do not dominate
-  --no-cc               when importing a mailbox, do NOT bring in the other To/Cc
-                        recipients of mail you received; keep only direct senders and the
-                        recipients of your sent mail (less noise)
+                        addresses, merge duplicates by email and by name,
+                        recompute fields, and pick the best primary email
+  -v, --verbose         print every discard/action to stderr: on import, each
+                        skipped email and why (spam, trash, self, blacklisted,
+                        automated, no-name); with --reconcile, every
+                        drop/merge/field change
+  --force               when an imported record overlaps an existing one,
+                        overwrite the existing text fields (company, title,
+                        name, ...) with the incoming values; by default
+                        existing (hand-edited) values are kept
+  --llm                 dump a per-email JSONL corpus
+                        (subject/from/to/date/body) from an mbox/PST instead
+                        of building the DB
+  --max-body BYTES      --llm: cap each message body to BYTES (default 262144;
+                        0 = unlimited) so attachment blobs do not dominate
+  --no-cc               when importing a mailbox, do NOT bring in the other
+                        To/Cc recipients of mail you received; keep only
+                        direct senders and the recipients of your sent mail
+                        (less noise)
   --whitelist PATH [PATH ...]
-                        keep only contacts whose email domain matches an entry in these
-                        files (one domain per line; '#' comments and blank lines ignored;
-                        subdomains match too). Accepts multiple files (unioned) and may
-                        be repeated.
+                        keep only contacts whose email domain matches an entry
+                        in these files (one domain per line; '#' comments and
+                        blank lines ignored; subdomains match too). Accepts
+                        multiple files (unioned) and may be repeated.
   --blacklist PATH [PATH ...]
-                        drop contacts/addresses whose email domain matches an entry in
-                        these files (one per line; '#' comments and blank lines ignored;
-                        subdomains match too). Accepts multiple files (unioned) and may
-                        be repeated.
-  --type TYPE           match contact type against any of LIST
-                        (customer/competitor/investor/reporter/partner/vendor/other)
+                        drop contacts/addresses whose email domain matches an
+                        entry in these files (one per line; '#' comments and
+                        blank lines ignored; subdomains match too). Accepts
+                        multiple files (unioned) and may be repeated.
+  --category CATEGORY   match contact category (industry segment from the
+                        yellowpages directory) against any of LIST
   --company COMPANY     match company against any of LIST
   --first-name FIRST_NAME
                         match first name against any of LIST
@@ -224,12 +238,12 @@ options:
 
 ## Database Record
 
-The database is a JSON array of contact records. Each record has the same 16
+The database is a JSON array of contact records. Each record has the same 18
 fields, in this order:
 
 ```json
 {
-  "type": "customer",
+  "category": "Semiconductor Devices",
   "friend": "",
   "last_name": "Vale",
   "first_name": "Jordan",
@@ -252,7 +266,7 @@ fields, in this order:
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `type` | string | Annotation you fill in: one of `customer`, `competitor`, `investor`, `reporter`, `partner`, `vendor`, `other`. Blank on import. |
+| `category` | string | Industry segment (e.g. `Semiconductor Devices`, `Defense`, `Venture Capital`, `Academic`), set automatically from the bundled yellowpages directory by email domain during `--reconcile`. Blank on import and for unlisted domains. |
 | `friend` | string | Annotation flag (e.g. `Y`); set from a vCard `friend` category, otherwise blank. |
 | `last_name` | string | Surname, derived from the display name. |
 | `first_name` | string | Given name, derived from the display name. |
@@ -271,9 +285,10 @@ fields, in this order:
 | `linkedin` | string | LinkedIn profile URL; set by a LinkedIn import (`--iformat linkedin`), otherwise blank. |
 | `import_date` | string | Date (`YYYY-MM-DD`) of the most recent non-database import (mbox/PST/vCard/Outlook/LinkedIn) that touched this record; blank for purely database-derived rows. |
 
-The four annotation columns (`type`, `friend`, `title`, `address`) are left
+The three annotation columns (`friend`, `title`, `address`) are left
 blank on a mailbox import for you to fill in by hand; they are preserved across
-re-imports and merges (see [Merge vs overwrite](#merge-vs-overwrite)). The same
+re-imports and merges (see [Merging and `--force`](#merging-the-default-and---force)).
+(`category` is set automatically by `--reconcile`, not hand-filled.) The same
 fields are the columns of the CSV export, and map to the corresponding vCard
 properties on export.
 
@@ -293,7 +308,9 @@ mc -i "/path/to/archive.pst" -o data/contacts.json    # Outlook PST
 mc -i "/path/to/contacts.vcf" -o data/contacts.json   # vCard (e.g. a Gmail export)
 ```
 
-`-i` and `-o` are required. The output format follows the `-o` extension:
+`-i` and `-o` each default to `$MC_DB` when omitted (see
+[Set the database once with `$MC_DB`](#set-the-database-once-with-mc_db)). The
+output format follows the `-o` extension:
 `.json`, `.csv`, and `.xlsx` are the interchangeable native database formats
 (same columns, lossless round-trip -- edit the DB in Excel and re-import it), and
 `.vcf` writes a vCard. Excel support is `.xlsx` only (via openpyxl); the legacy
@@ -304,14 +321,14 @@ a bare `.csv`/`.xlsx` is read as the native layout:
     mc -i contacts.csv --iformat outlook -o data/contacts.json
 
 The Outlook reader takes First/Last Name, Job Title, Company, the E-mail Address
-columns, Business Phone, and the business address columns; `type`/`friend` and
+columns, Business Phone, and the business address columns; `category`/`friend` and
 email counts are left blank/0. See `mc -h` for all options.
 
 Importing a **vCard** adds its contacts directly (no message filtering): it maps
-N/FN, ORG, TITLE, TEL, ADR, every EMAIL, and `CATEGORIES` (a category matching a
-legal `type` value sets the type; a `friend` category sets the friend flag). Like
-any import it folds into the existing database, so you can combine a vCard export
-with an mbox-built database.
+N/FN, ORG, TITLE, TEL, ADR, every EMAIL, and `CATEGORIES` (the first non-`friend`
+category becomes the contact's `category`; a `friend` category sets the friend
+flag). Like any import it folds into the existing database, so you can combine a
+vCard export with an mbox-built database.
 
 ### What gets imported
 
@@ -393,7 +410,7 @@ a new path).
 For an existing contact, the counts (`num_emails`, `num_sent`, `num_received`)
 are overwritten with the latest import, the email list is unioned, the
 interaction date range widens, and `import_date` updates. Hand-edited text fields
-(`type`/`friend`/`title`/`address`, plus name/company/phone) are **preserved** by
+(`friend`/`title`/`address`, plus name/company/phone) are **preserved** by
 default -- the import only fills a blank. Pass **`--force`** to let the incoming
 non-empty values **overwrite** those fields instead. Contacts present only in the
 old file are always kept.
@@ -406,8 +423,9 @@ mc -i extra.json  -o data/contacts.json            # fold one DB into another
 
 This lets you re-run as a mailbox grows, or accumulate multiple sources, without
 losing manual annotations. Imported rows include blank columns for you to fill in
-by hand: `type` (one of `customer`, `competitor`, `investor`, `reporter`,
-`partner`, `vendor`, `other`), `friend`, `title`, and `address`.
+by hand: `friend`, `title`, and `address`. (The `category` column -- an industry
+segment -- is filled automatically by `--reconcile` from the bundled yellowpages
+directory.)
 
 (Records are matched by email, or by LinkedIn profile URL when there is no email,
 so email-less LinkedIn contacts survive a merge.)
@@ -486,8 +504,8 @@ unioned, and the flag may also be repeated), so you can keep each category in
 its own file. They combine with each other and with all the column filters.
 
 ```bash
-# Customers and investors (the `type` column you filled in) -> vCard:
-mc -i data/contacts.json --type customer,investor -o leads.vcf
+# All semiconductor and defense contacts (category set by --reconcile) -> vCard:
+mc -i data/contacts.json --category "Semiconductor Devices,Defense" -o leads.vcf
 
 # Everyone at Intel or AMD with at least 5 emails, active since 2024 -> CSV:
 mc -i data/contacts.json \
@@ -503,14 +521,15 @@ mc -i data/contacts.json \
 ```
 
 The vCard maps name/emails (primary marked `PREF`), `company`->ORG,
-`title`->TITLE, `phone`->TEL, `address`->ADR/LABEL, and `type`/`friend`->
+`title`->TITLE, `phone`->TEL, `address`->ADR/LABEL, and `category`/`friend`->
 CATEGORIES, plus a NOTE with the email counts and last-contact date.
 
-`--type` accepts only the legal values (`customer`, `competitor`, `investor`,
-`reporter`, `partner`, `vendor`, `other`). See `mc -h` for the full set of
-filters (`--type`, `--first-name`, `--last-name`, `--email-domain`,
-`--whitelist`, `--blacklist`, `--min/max-emails`, `--min/max-sent`,
-`--min/max-received`, `--first-after/before`, `--last-after/before`).
+`--category` matches the industry segment assigned by `--reconcile` (e.g.
+`Semiconductor Devices`, `Defense`, `Venture Capital`, `Academic`). See `mc -h`
+for the full set of filters (`--category`, `--first-name`, `--last-name`,
+`--email-domain`, `--whitelist`, `--blacklist`, `--min/max-emails`,
+`--min/max-sent`, `--min/max-received`, `--first-after/before`,
+`--last-after/before`).
 
 ## Reconciling contacts
 
@@ -537,6 +556,12 @@ In order, reconcile:
 5. **Picks the best primary email** -- the address whose domain matches the
    contact's current `company` if there is one, else the most-used address.
 6. **Normalizes** name capitalization and phone numbers (to `+E.164`).
+7. **Standardizes companies and assigns `category`** from the bundled
+   yellowpages directory, keyed by email domain: company-name spelling variants
+   are collapsed to one form, and listed domains get an authoritative company
+   name plus an industry `category` (e.g. `Semiconductor Devices`, `Defense`); a
+   `.edu` address gets `Academic`. Unlisted domains keep their company and a
+   blank category.
 
 When duplicates are merged, `company`/`title` come from the **LinkedIn-sourced**
 record (LinkedIn is the authority on current employer); all other fields come
