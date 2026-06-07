@@ -1,0 +1,18 @@
+# Built-in spam / junk sender domain blacklist (bundled with mailcompiler).
+# One domain per line; '#' comments and blank lines are ignored; an entry may be
+# written "example.com" or "@example.com"; subdomains match too. These are
+# always filtered (like the yellowpages directory); a user --blacklist is unioned
+# on top. Keep this list to clear spam/marketing domains only -- legitimate
+# companies on modern TLDs (e.g. ramon.space, engine.xyz) must NOT be listed.
+
+# Cheap/abused-gTLD marketing-spam domains (concatenated-word + .shop/.xyz/...).
+businessvaluegrowthsalesell.shop
+recruitworkzone.shop
+staminaprospects.space
+monerabizfuelup.xyz
+whalesongapps.xyz
+proengineer.xyz
+namragroup.xyz
+tkxel-ua.online
+tkxeluspro.online
+tkxelsoft.website

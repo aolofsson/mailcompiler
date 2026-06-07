@@ -21,7 +21,7 @@ from mailcompiler.mailcompiler import (
     _write_xlsx, _read_xlsx, iter_mbox_messages,
     load_domain_list, contact_domains, contact_in_domains, select_by_domains,
     parse_linkedin_csv, _name_key, _fold_linkedin,
-    reconcile_contacts,
+    reconcile_contacts, _record_key,
     main,
 )
 
@@ -59,6 +59,45 @@ class TestIsBot:
 
     def test_missing_domain(self):
         assert is_bot("brokenaddress")
+
+    def test_numeric_local_part(self):
+        assert is_bot("12345678@example.com")    # phone-number / random-id local
+        assert is_bot("900112233@example.com")
+        assert not is_bot("foo99@example.com")   # digits but not all-numeric
+        assert not is_bot("12345@example.com")   # too short (<6)
+
+    def test_machine_generated_tokens(self):
+        assert is_bot("foo-dmarc-request@example.org")
+        assert is_bot("microsoftexchange0123456789abcdef@example.com")
+        assert is_bot("abababababababab@example.com")    # 16-char hex blob
+        assert is_bot("listserv@example.org")
+
+    def test_role_component_local_parts(self):
+        # a role word as a delimited component (not just the whole local-part)
+        assert is_bot("unit12.director@example.mil")
+        assert is_bot("foo_admin@example.com")
+        assert is_bot("foo.support@example.com")
+        assert is_bot("foo_notifications@example.com")
+        assert is_bot("foo.insights@example.com")
+
+    def test_builtin_blacklist_domains(self):
+        # domains from the bundled blacklist.txt are always filtered. Build the
+        # address at runtime so no spam-domain literal lives in the source.
+        from mailcompiler.mailcompiler import load_builtin_blacklist
+        bl = load_builtin_blacklist()
+        assert bl, "bundled blacklist should be non-empty"
+        dom = sorted(bl)[0]
+        assert is_bot("contactme@" + dom)            # listed domain -> filtered
+        assert is_bot("contactme@sub." + dom)        # subdomain match
+        assert not is_bot("contactme@example.com")   # not listed -> not filtered
+
+    def test_role_component_avoids_surname_false_positives(self):
+        # whole-component match only -- surnames that merely contain or resemble
+        # a role word must NOT be filtered.
+        assert not is_bot("wile.council@example.com")    # "council" surname
+        assert not is_bot("wile.press@example.com")      # "press" surname
+        assert not is_bot("fooabuse68@example.com")      # contains "abuse"
+        assert not is_bot("wile.coyote@example.mil")
 
 
 class TestSplitName:
@@ -1461,3 +1500,60 @@ class TestNewSchemaFields:
             assert back["birthday"] == "1990-05-01"
             assert back["github"] == "https://github.com/dvale"
             assert back["notes"] == "met at a conference"
+
+
+class TestRecordKey:
+    def test_key_priority_email_linkedin_phone_name(self):
+        assert _record_key(_row(first="A", last="B",
+                                primary="a@example.com")) == "a@example.com"
+        li = _row(first="A", last="B")
+        li["linkedin"] = "https://x/in/ab"
+        assert _record_key(li) == "linkedin:https://x/in/ab"
+        # phone-only (an address-book entry with just a mobile number)
+        ph = _record_key(_row(first="Wile", last="Coyote", phone="+1 202-555-0100"))
+        assert ph.startswith("phone:+1")
+        # name-only
+        # name-only (no email/LinkedIn/phone) -> no key, matching reconcile
+        assert _record_key(_row(first="Foo", last="Bar")) == ""
+        assert _record_key(_row()) == ""
+
+    def test_distinct_phone_only_contacts_do_not_collide(self):
+        a = _row(first="Wile", last="Coyote", phone="+1 202-555-0100")
+        b = _row(first="Road", last="Runner", phone="+1 202-555-0188")
+        assert _record_key(a) != _record_key(b)
+
+
+class TestImportKeepsEmaillessContacts:
+    # Regression: an Outlook/vCard contact with only a phone (no email) must not
+    # be silently dropped at the import-merge step or by load_rows. A name-only
+    # contact with no way to reach the person is dropped (matches reconcile).
+    OUTLOOK = ("First Name,Last Name,E-mail Address,Mobile Phone\r\n"
+               "Wile,Coyote,,+1 202-555-0100\r\n"      # phone-only, no email
+               "Foo,Bar,,\r\n"                         # name-only, no email/phone
+               "Jane,Roe,jane@example.com,\r\n")       # normal
+
+    def test_phone_only_survives_import_name_only_dropped(self):
+        src = _write_tmp(self.OUTLOOK, ".csv")
+        out = _write_tmp("", ".json")
+        try:
+            main(["-i", src, "--iformat", "outlook", "-o", out])
+            db = load_rows(out)
+        finally:
+            for p in (src, out):
+                os.remove(p)
+        names = {(r["first_name"], r["last_name"]) for r in db}
+        assert ("Wile", "Coyote") in names      # phone-only kept
+        assert ("Jane", "Roe") in names
+        assert ("Foo", "Bar") not in names      # name-only, no contact -> dropped
+
+    def test_phone_only_contact_survives_reconcile(self):
+        # phone-only contact is kept by reconcile (has a phone), name-only with
+        # no email/LinkedIn/phone is dropped.
+        rows = [_row(first="Wile", last="Coyote", phone="+1 202-555-0100"),
+                _row(first="Foo", last="Bar")]
+        rows[0]["primary_email"], rows[0]["emails"] = "", []
+        rows[1]["primary_email"], rows[1]["emails"] = "", []
+        out = reconcile_contacts(rows)
+        kept = {(r["first_name"], r["last_name"]) for r in out}
+        assert ("Wile", "Coyote") in kept       # has a phone -> kept
+        assert ("Foo", "Bar") not in kept        # no email/LinkedIn/phone -> dropped

@@ -99,6 +99,30 @@ BOT_DOMAINS = (
     "news.", "mailing.", "updates.", "em.", "messaging.",
 )
 
+# Machine-generated local-parts: DMARC report mailboxes, Exchange/Graph object
+# GUIDs, long hex blobs, and list-server management addresses. Matched against
+# the "-"-normalized local-part.
+BOT_MACHINE = re.compile(
+    r'(dmarc-request|microsoftexchange[0-9a-f]{6,}|listserv|majordomo|'
+    r'[0-9a-f]{16,})')
+
+# Role / automated mailbox words that, when they appear as a delimited component
+# of the local-part (split on . _ - +), mark a non-personal address -- e.g.
+# "309emxg.director", "pdk_admin", "ces_notifications", "api.support". Matched
+# whole-component (never substring) to avoid false positives like "mabuse68".
+# Surname-risky words (press, council, chief, ...) are deliberately excluded.
+ROLE_COMPONENTS = {
+    "director", "commander", "commandant", "squadron", "detachment",
+    "headquarters", "helpdesk", "webmaster", "hostmaster", "procurement",
+    "purchasing", "payroll", "registrar", "ombudsman", "recruiting",
+    "recruitment", "notification", "notifications", "support", "admin",
+    "administrator", "info", "sales", "billing", "accounts", "accounting",
+    "marketing", "newsletter", "webinar", "webinars", "survey", "surveys",
+    "feedback", "announce", "announcement", "announcements", "digest", "digests",
+    "automailer", "marcomm", "compliance", "careers", "jobs", "office",
+    "mailroom", "reception", "frontdesk", "insights",
+}
+
 
 def dec(s):
     """Decode an RFC2047 header value to plain text."""
@@ -125,11 +149,23 @@ def is_bot(email_addr):
     if BOT_LOCAL.match(norm) or BOT_SUBSTR.search(ll) \
             or BOT_SUBSTR.search(domain.lower()):
         return True
+    # all-numeric local-part (phone numbers / random ids), never a real person
+    if local.isdigit() and len(local) >= 6:
+        return True
+    # machine-generated tokens: DMARC reports, Exchange GUIDs, hex blobs, lists
+    if BOT_MACHINE.search(norm):
+        return True
+    # role/automated word as a delimited local-part component (whole-component)
+    if any(p in ROLE_COMPONENTS for p in re.split(r"[._+\-]", ll) if p):
+        return True
     if "+" in local and local.split("+", 1)[0].lower() in BOT_TAG_PREFIX:
         return True
     for d in BOT_DOMAINS:
         if domain == d or domain.endswith("." + d) or domain.startswith(d):
             return True
+    # bundled spam-domain blacklist (always applied)
+    if _domain_matches(domain.lower(), load_builtin_blacklist()):
+        return True
     return False
 
 
@@ -154,6 +190,23 @@ def load_domain_list(path):
 def _domain_matches(domain, domain_set):
     """True if `domain` equals or is a subdomain of any entry in domain_set."""
     return any(domain == d or domain.endswith("." + d) for d in domain_set)
+
+
+_BUILTIN_BLACKLIST = None
+
+
+def load_builtin_blacklist():
+    """Load the bundled spam-domain blacklist (mailcompiler/blacklist.txt) into a
+    cached set of domains. Always applied by is_bot; returns {} if the file is
+    absent. A user-supplied --blacklist is unioned on top of this."""
+    global _BUILTIN_BLACKLIST
+    if _BUILTIN_BLACKLIST is None:
+        path = os.path.join(os.path.dirname(__file__), "blacklist.txt")
+        try:
+            _BUILTIN_BLACKLIST = load_domain_list(path)
+        except FileNotFoundError:
+            _BUILTIN_BLACKLIST = set()
+    return _BUILTIN_BLACKLIST
 
 
 def is_blacklisted(email_addr, blacklist_domains):
@@ -552,11 +605,11 @@ def load_rows(path):
     else:
         with open(path, "r", encoding="utf-8", newline="") as fh:
             records = list(csv.DictReader(fh))
-    # A record is keyed by its email; LinkedIn-only contacts have no email but
-    # are identified by their profile URL, so keep those too.
-    return [_normalize_row(d) for d in records
-            if str(d.get("primary_email") or "").strip()
-            or str(d.get("linkedin") or "").strip()]
+    # Keep any record we can identify -- by email, LinkedIn URL, phone, or name
+    # (see _record_key). Only a row with none of those (nothing to key it by) is
+    # skipped, so phone-only / name-only address-book entries are not lost.
+    rows = [_normalize_row(d) for d in records]
+    return [r for r in rows if _record_key(r)]
 
 
 def _merge_date(a, b, newest):
@@ -1368,14 +1421,27 @@ def write_contacts_as(path, rows, fmt):
 
 
 def _record_key(r):
-    """Stable identity for a contact used to key a merge: its email, else its
-    LinkedIn URL. This lets email-less LinkedIn-only contacts survive a merge
-    (otherwise an email-keyed merge would silently drop them)."""
+    """Stable identity for a contact used to key a merge, in priority order:
+    email, LinkedIn URL, then phone number. Falling back past email lets
+    email-less contacts (LinkedIn-only, or phone-only like an address-book entry
+    with just a mobile number) survive a merge instead of being silently dropped
+    -- matching reconcile's keep rule (email / LinkedIn / phone). A record with
+    none of those has no way to reach the person and returns "" (not kept)."""
     email = (r.get("primary_email") or "").strip().lower()
     if email:
         return email
     url = (r.get("linkedin") or "").strip().rstrip("/").lower()
-    return ("linkedin:" + url) if url else ""
+    if url:
+        return "linkedin:" + url
+    phone = _normalize_phone(r.get("primary_phone") or "")
+    if not phone:
+        for p in r.get("phone_numbers") or []:
+            phone = _normalize_phone(p)
+            if phone:
+                break
+    if phone:
+        return "phone:" + phone
+    return ""
 
 
 def _read_existing_contacts(path, fmt):
@@ -1414,7 +1480,7 @@ def _fold_into(existing, new_rows, force=False):
     for row in new_rows:
         key = _record_key(row)
         if not key:
-            continue   # no email and no LinkedIn URL: nothing to key it by
+            continue   # no email, LinkedIn, or phone: nothing to key it by
         if key in existing:
             merge_row(existing[key], row, force=force)
             n_updated += 1

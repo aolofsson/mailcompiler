@@ -28,6 +28,9 @@ mc = "mailcompiler.mailcompiler:main"
 [tool.setuptools.packages.find]
 include = ["mailcompiler*"]
 
+[tool.setuptools.package-data]
+mailcompiler = ["*.csv", "*.txt"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

@@ -10,7 +10,7 @@
 - Your contact network is valuable, don't lose touch!
 - Don't let platforms control you, own your data!
 - Email client search functions are basically useless, we need a LLM friendly DB.
-- Scraping old email inboxes to recover contacts is a waste of life.
+- Manually scraping old email inboxes to recover contacts is a waste of life.
 
 ## Key features
 - Clean, human-readable JSON contact database
