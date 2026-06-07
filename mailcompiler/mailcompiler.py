@@ -92,6 +92,7 @@ BOT_DOMAINS = (
     "mixmax.com", "mail.notion.so", "reply.github.com", "github.com",
     "mktomail.com", "beehiiv.com", "en25.com", "hubspotstarter.net",
     "connectedcommunity.org", "mailmarketo.com", "marketo.com",
+    "groups.io", "googlegroups.com", "freelists.org", "lists.",
     "messaging.microsoft.com", "messaging.microsoftonline.com",
     "notifications.", "noreply.", "engagement.", "marketing.", "email.",
     "news.", "mailing.", "updates.", "em.", "messaging.",
@@ -425,11 +426,9 @@ class Rec:
 
 
 # ---- CSV output / additive merge -------------------------------------------
-# Legal values for the manual `type` column (blank = unset).
-TYPE_VALUES = ["customer", "competitor", "investor", "reporter", "partner",
-               "vendor", "other"]
-
-CSV_FIELDS = ["type", "friend", "last_name", "first_name", "title", "company",
+# `category` holds the industry segment, set from the yellowpages directory by
+# email domain during --reconcile (Semiconductor, Defense, Venture Capital, ...).
+CSV_FIELDS = ["category", "friend", "last_name", "first_name", "title", "company",
               "phone", "address", "primary_email", "emails", "num_emails",
               "num_sent", "num_received", "first_interaction",
               "last_interaction", "source", "linkedin", "import_date"]
@@ -449,7 +448,7 @@ def _to_int(v):
 def person_to_row(p, source):
     """Convert an in-memory person dict to a CSV row dict, tagged with source."""
     return {
-        "type": "",
+        "category": "",
         "friend": "",
         "last_name": p["last_name"],
         "first_name": p["first_name"],
@@ -479,7 +478,8 @@ def _normalize_row(d):
     if not isinstance(emails, list):
         emails = (emails or "").split()
     return {
-        "type": str(d.get("type") or "").strip(),
+        # read legacy "type" header so pre-rename CSV/JSON still load
+        "category": str(d.get("category") or d.get("type") or "").strip(),
         "friend": str(d.get("friend") or "").strip(),
         "last_name": str(d.get("last_name") or "").strip(),
         "first_name": str(d.get("first_name") or "").strip(),
@@ -544,12 +544,12 @@ def _union_sources(a, b):
 
 
 def merge_row(existing, new, force=False):
-    """Merge `new` into `existing`. By default hand-edited text fields (type,
+    """Merge `new` into `existing`. By default hand-edited text fields (category,
     name, company, ...) are preserved (the new value only fills a blank); with
     `force=True` a non-empty new value overwrites the existing one. Counts are
     overwritten with the latest import; emails and sources union; the date range
     widens."""
-    for f in ("type", "friend", "last_name", "first_name", "title", "company",
+    for f in ("category", "friend", "last_name", "first_name", "title", "company",
               "phone", "address"):
         existing[f] = (new[f] or existing[f]) if force else (existing[f] or new[f])
     for e in new["emails"]:
@@ -580,7 +580,7 @@ def _write_atomic(path, write_fn):
 
 def _native_cells(r):
     """Row cells for the native full-column layout, in CSV_FIELDS order."""
-    return [r.get("type", ""), r.get("friend", ""), r["last_name"],
+    return [r.get("category", ""), r.get("friend", ""), r["last_name"],
             r["first_name"], r.get("title", ""), r["company"],
             r.get("phone", ""), r.get("address", ""), r["primary_email"],
             " ".join(r["emails"]), r["num_emails"], r["num_sent"],
@@ -783,7 +783,7 @@ def _domain(addr):
 def build_criteria(args):
     """Turn parsed list args into a flat dict of active predicates."""
     return {
-        "type": _csv_set(args.type),
+        "category": _csv_set(args.category),
         "company": _csv_set(args.company),
         "first_name": _csv_set(args.first_name),
         "last_name": _csv_set(args.last_name),
@@ -804,7 +804,7 @@ def build_criteria(args):
 def matches(contact, crit):
     """Return True if a contact satisfies every active criterion (AND)."""
     # Text set-membership (case-insensitive exact).
-    for field in ("type", "company", "first_name", "last_name"):
+    for field in ("category", "company", "first_name", "last_name"):
         allowed = crit[field]
         if allowed is not None and str(contact.get(field, "")).lower() not in allowed:
             return False
@@ -1403,7 +1403,7 @@ def _new_linkedin_row(entry, run_date):
     """Build a fresh contact row from a LinkedIn entry (may be email-less)."""
     email = (entry.get("email") or "").strip().lower()
     return {
-        "type": "", "friend": "",
+        "category": "", "friend": "",
         "last_name": clean(entry.get("last", "")),
         "first_name": clean(entry.get("first", "")),
         "title": entry.get("position", ""),
@@ -1550,7 +1550,7 @@ def _join_distinct(values, sep=SOURCE_SEP):
 
 def _merge_group(rows):
     """Merge a list of same-name contact rows into one (counts sum; emails and
-    sources union; dates widen; type/company/phone keep all distinct values;
+    sources union; dates widen; category/company/phone keep all distinct values;
     name casing and primary email come from the highest-volume row)."""
     winner = max(rows, key=lambda r: r["num_emails"])
     emails = []
@@ -1565,7 +1565,7 @@ def _merge_group(rows):
         first = _merge_date(first, r.get("first_interaction"), newest=False)
         last = _merge_date(last, r.get("last_interaction"), newest=True)
     return {
-        "type": _join_distinct(r["type"] for r in rows),
+        "category": _join_distinct(r["category"] for r in rows),
         "friend": _join_distinct(r["friend"] for r in rows),
         "last_name": winner["last_name"],
         "first_name": winner["first_name"],
@@ -1655,6 +1655,13 @@ def _is_free(addr):
     return (addr or "").split("@")[-1].lower() in FREE_PROVIDERS
 
 
+def _is_stable(addr):
+    """A personal/academic address that stays valid across job changes: a
+    free-provider mailbox or an academic (.edu) domain."""
+    dom = (addr or "").split("@")[-1].lower()
+    return dom in FREE_PROVIDERS or dom.endswith(".edu")
+
+
 def _mergeable_address(addr):
     """A valid, personal address usable as a cross-record identity key (not a
     free-provider, role/generic, or bot mailbox that different people may share)."""
@@ -1693,12 +1700,13 @@ def _company_core(name):
 
 def _pick_primary(record):
     """Pick the primary email. When the record has a company, prefer an address
-    whose domain maps to it; failing that, prefer a personal address (stable
-    across jobs); failing that, return "" -- the only remaining addresses are
-    former-employer corporate ones that no longer match the company and would
-    likely bounce, so a blank primary is better than a bouncing one (the contact
-    is anchored by name, not email). With no company we cannot judge a mismatch,
-    so keep the current primary if present, else emails[0]."""
+    whose domain maps to it; failing that, prefer a stable address -- a personal
+    (free-provider) or academic (.edu) mailbox that survives job changes;
+    failing that, return "" -- the only remaining addresses are former-employer
+    corporate ones that no longer match the company and would likely bounce, so a
+    blank primary is better than a bouncing one (the contact is anchored by name,
+    not email). With no company we cannot judge a mismatch, so keep the current
+    primary if present, else emails[0]."""
     emails = record.get("emails") or []
     if not emails:
         return record.get("primary_email", "") or ""
@@ -1709,8 +1717,8 @@ def _pick_primary(record):
             if cf and (cf == company
                        or (len(cf) >= 4 and (cf in company or company in cf))):
                 return e
-        for e in emails:                        # 2. else a personal address
-            if _is_free(e):
+        for e in emails:                        # 2. else a personal/.edu address
+            if _is_stable(e):
                 return e
         return ""                               # 3. only stale corporate left
     cur = record.get("primary_email") or ""
@@ -1805,7 +1813,7 @@ def _reconcile_merge(group, log=None):
             merged[f] = li[f]
         elif not str(merged.get(f) or "").strip():
             merged[f] = first_nonblank(f)
-    for f in ("first_name", "last_name", "phone", "address", "type", "friend"):
+    for f in ("first_name", "last_name", "phone", "address", "category", "friend"):
         if not str(merged.get(f) or "").strip():
             merged[f] = first_nonblank(f)
 
@@ -1989,6 +1997,7 @@ def reconcile_contacts(rows, log=None):
         else:
             out.append(r)
     _canonicalize_companies(out, log)
+    _apply_yellowpages(out, log)        # authoritative: set category + official company by domain
     out.sort(key=_contact_sort_key)
     return out
 
@@ -2017,6 +2026,77 @@ def _canonicalize_companies(rows, log=None):
             if log:
                 log("canon company: %s: %r -> %r" % (_record_label(r), c, canon))
             r["company"] = canon
+
+
+_YELLOWPAGES = None
+
+
+def load_yellowpages():
+    """Load the bundled yellowpages directory -> {domain: (category, company)}.
+    Cached; returns {} if the file is absent (reconcile then leaves category
+    blank and does not standardize company names)."""
+    global _YELLOWPAGES
+    if _YELLOWPAGES is None:
+        _YELLOWPAGES = {}
+        path = os.path.join(os.path.dirname(__file__), "yellowpages.csv")
+        try:
+            with open(path, newline="", encoding="utf-8") as fh:
+                for row in csv.DictReader(fh):
+                    dom = (row.get("domain") or "").strip().lower()
+                    if dom:
+                        _YELLOWPAGES[dom] = ((row.get("category") or "").strip(),
+                                             (row.get("company") or "").strip())
+        except FileNotFoundError:
+            pass
+    return _YELLOWPAGES
+
+
+def _yp_lookup(domain, yp):
+    """Find the yellowpages entry for an email domain, matched at the registrable
+    level (research.intel.com -> intel.com)."""
+    parts = (domain or "").lower().split(".")
+    for i in range(len(parts) - 1):
+        hit = yp.get(".".join(parts[i:]))
+        if hit:
+            return hit
+    return None
+
+
+def _apply_yellowpages(rows, log=None):
+    """Set each contact's category and standardize its company from the
+    yellowpages directory, keyed by the email domain (primary first, then other
+    emails). The directory is authoritative for listed domains -- company is
+    overwritten. Domains not in the directory keep their company; a `.edu`
+    primary address gets the 'Academic' category, else category stays blank."""
+    yp = load_yellowpages()
+    for r in rows:
+        hit = None
+        for a in [r.get("primary_email", "")] + list(r.get("emails") or []):
+            dom = a.split("@")[-1].lower() if a and "@" in a else ""
+            hit = _yp_lookup(dom, yp)
+            if hit:
+                break
+        if hit:
+            category, company = hit
+            if category and r.get("category") != category:
+                if log:
+                    log("category: %s -> %s (%s)"
+                        % (r.get("category") or "<none>", category,
+                           _record_label(r)))
+                r["category"] = category
+            if company and r.get("company") != company:
+                if log:
+                    log("standardize company: %r -> %r (%s)"
+                        % (r.get("company"), company, _record_label(r)))
+                r["company"] = company
+            continue
+        # not in the directory: an academic (.edu) primary -> Academic category
+        pdom = (r.get("primary_email") or "").split("@")[-1].lower()
+        if pdom.endswith(".edu") and r.get("category") != "Academic":
+            if log:
+                log("category: %s -> Academic (%s)"
+                    % (r.get("category") or "<none>", _record_label(r)))
+            r["category"] = "Academic"
 
 
 # ---- vCard export -----------------------------------------------------------
@@ -2085,7 +2165,7 @@ def _contact_vcard(row):
         note += "; source: " + row["source"]
     props.append("NOTE:" + _vcard_escape(note))
 
-    cats = [c for c in (row.get("type") or "",
+    cats = [c for c in (row.get("category") or "",
                         "friend" if row.get("friend") else "") if c]
     if cats:
         props.append("CATEGORIES:" + ",".join(_vcard_escape(c) for c in cats))
@@ -2161,16 +2241,16 @@ def _vcard_to_row(card, source):
     primary = card["pref_email"] or (card["emails"][0] if card["emails"] else "")
     emails = ([primary] if primary else [])
     emails += [e for e in card["emails"] if e and e != primary and e not in emails]
-    ctype, friend = "", ""
+    category, friend = "", ""
     for c in card["categories"]:
-        if c.lower() in TYPE_VALUES and not ctype:
-            ctype = c.lower()
         if c.lower() == "friend":
             friend = "Y"
+        elif not category:
+            category = c
     if not (first or last or primary):
         return None
     return _normalize_row({
-        "type": ctype, "friend": friend, "first_name": first, "last_name": last,
+        "category": category, "friend": friend, "first_name": first, "last_name": last,
         "title": card["title"], "company": card["org"], "phone": card["tel"],
         "address": card["label"] or card["adr"], "primary_email": primary,
         "emails": emails, "source": source,
@@ -2469,11 +2549,6 @@ def cmd_import(args, ifmt, ofmt):
 
 def cmd_export(args, ofmt):
     """Export matching records as CSV/XLSX, Outlook CSV/XLSX, or vCard."""
-    if args.type:
-        bad = [t for t in (_csv_set(args.type) or set()) if t not in TYPE_VALUES]
-        if bad:
-            sys.exit("error: invalid --type value(s) %s; legal values: %s"
-                     % (", ".join(sorted(bad)), ", ".join(TYPE_VALUES)))
     whitelist, blacklist = load_domain_filters(args)
     contacts = load_rows(args.input)
     crit = build_criteria(args)
@@ -2625,9 +2700,9 @@ def parse_args(argv=None):
                         "blank lines ignored; subdomains match too). Accepts "
                         "multiple files (unioned) and may be repeated.")
     # Export filters (apply when the operation resolves to an export).
-    p.add_argument("--type", dest="type",
-                   help="match contact type against any of LIST (%s)"
-                        % "/".join(TYPE_VALUES))
+    p.add_argument("--category", dest="category",
+                   help="match contact category (industry segment from the "
+                        "yellowpages directory) against any of LIST")
     p.add_argument("--company", help="match company against any of LIST")
     p.add_argument("--first-name", dest="first_name",
                    help="match first name against any of LIST")
