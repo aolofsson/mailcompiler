@@ -20,7 +20,7 @@ digraph mailcompiler_conversions {
     //   yellow = inputs (left), blue = outputs (right), grey = the JSON DB.
 
     // --- the native database (grey, center) ------------------------------
-    json [label="Your Contacts\n (JSON)",
+    json [label="\nYour Contacts\n (JSON)",
           shape=cylinder, fillcolor="#d1d1d1", penwidth=2];
 
     // --- import sources (yellow, left) -----------------------------------
