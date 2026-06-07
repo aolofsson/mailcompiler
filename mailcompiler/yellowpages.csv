@@ -74,13 +74,17 @@ Components,Bel Fuse,belfuse.com
 Components,Bourns,bourns.com
 Components,Hirose,hirose.com
 Components,KEMET,kemet.com
+Components,Knowles,knowles.com
 Components,Kyocera,kyocera.com
 Components,Littelfuse,littelfuse.com
 Components,Molex,molex.com
 Components,Murata,murata.com
 Components,Nichicon,nichicon.com
+Components,Nippon Chemi-Con,chemi-con.co.jp
+Components,Rubycon,rubycon.co.jp
 Components,Samsung Electro-Mechanics,samsungsem.com
 Components,Samtec,samtec.com
+Components,Taiyo Yuden,yuden.co.jp
 Components,TDK,tdk.com
 Components,TE Connectivity,te.com
 Components,Wurth Elektronik,we-online.com
@@ -120,6 +124,7 @@ Consumer Electronics,Vizio,vizio.com
 Consumer Electronics,Xiaomi,xiaomi.com
 Consumer Electronics,Yamaha,yamaha.com
 Datacenter,ASRock Rack,asrockrack.com
+Datacenter,Cray,cray.com
 Datacenter,Dell,dell.com
 Datacenter,Eviden (Atos),eviden.com
 Datacenter,HPE,hpe.com
@@ -141,6 +146,7 @@ Defense,Booz Allen Hamilton,bah.com
 Defense,CACI,caci.com
 Defense,Curtiss-Wright,curtisswright.com
 Defense,Elbit Systems,elbitsystems.com
+Defense,Elta Systems,elta.co.il
 Defense,Epirus,epirus.com
 Defense,General Atomics,ga.com
 Defense,General Dynamics,gd.com
@@ -153,9 +159,11 @@ Defense,Kratos Defense,kratosdefense.com
 Defense,L3Harris Technologies,l3harris.com
 Defense,Leidos,leidos.com
 Defense,Leonardo,leonardo.com
+Defense,Lockheed Martin,lmco.com
 Defense,Lockheed Martin,lockheedmartin.com
 Defense,Mercury Systems,mrcy.com
 Defense,Moog,moog.com
+Defense,Northrop Grumman,ngc.com
 Defense,Northrop Grumman,northropgrumman.com
 Defense,Palantir Technologies,palantir.com
 Defense,Rafael,rafael.co.il
@@ -207,6 +215,8 @@ Energy,Vestas,vestas.com
 Government,Airforce,af.mil
 Government,Argonne,anl.gov
 Government,Army,army.mil
+Government,CEA,cea.fr
+Government,CEA-Leti,leti-cea.com
 Government,Coast Guard,uscg.mil
 Government,DARPA,darpa.mil
 Government,DIU,diu.mil
@@ -214,6 +224,9 @@ Government,DLA,dla.mil
 Government,DoD,defense.gov
 Government,DOE,energy.gov
 Government,IARPA,iarpa.gov
+Government,IMEC,imec-int.com
+Government,IMEC,imec.be
+Government,INRIA,inria.fr
 Government,LANL,lanl.gov
 Government,LBL,lbl.gov
 Government,LLNL,llnl.gov
@@ -293,10 +306,12 @@ Networking & Telecom,Cisco,cisco.com
 Networking & Telecom,Commscope,commscope.com
 Networking & Telecom,Ericsson,ericsson.com
 Networking & Telecom,Fortinet,fortinet.com
+Networking & Telecom,Huawei,huawei.com
 Networking & Telecom,Infinera,infinera.com
 Networking & Telecom,Juniper,juniper.net
 Networking & Telecom,Nokia,nokia.com
 Networking & Telecom,Palo Alto Networks,paloaltonetworks.com
+Networking & Telecom,ZTE,zte.com.cn
 Semiconductor Devices,Achronix,achronix.com
 Semiconductor Devices,Advanced Micro Devices,amd.com
 Semiconductor Devices,Allegro Microsystems,allegromicro.com
@@ -311,10 +326,12 @@ Semiconductor Devices,Diodes,diodes.com
 Semiconductor Devices,Efinix,efinixinc.com
 Semiconductor Devices,Epson,epson.com
 Semiconductor Devices,Fujitsu,fujitsu.com
+Semiconductor Devices,GigaDevice,gigadevice.com
 Semiconductor Devices,Groq,groq.com
 Semiconductor Devices,Himax,himax.com
 Semiconductor Devices,Holtek,holtek.com
 Semiconductor Devices,Infineon,infineon.com
+Semiconductor Devices,Intel,intel.com
 Semiconductor Devices,Issi,issi.com
 Semiconductor Devices,Kingston,kingston.com
 Semiconductor Devices,Kioxia,kioxia.com
@@ -338,6 +355,7 @@ Semiconductor Devices,Novatek,novatek.com.tw
 Semiconductor Devices,Nuvoton,nuvoton.com
 Semiconductor Devices,Nvidia,nvidia.com
 Semiconductor Devices,NXP,nxp.com
+Semiconductor Devices,OmniVision,ovt.com
 Semiconductor Devices,Onsemi,onsemi.com
 Semiconductor Devices,Panasonic,panasonic.com
 Semiconductor Devices,Phison,phison.com
@@ -369,22 +387,25 @@ Semiconductor Devices,Vicor,vicor.com
 Semiconductor Devices,Vishay,vishay.com
 Semiconductor Devices,Western Digital,westerndigital.com
 Semiconductor Devices,Winbond,winbond.com
-Semiconductor EDA & IP,Rambus,rambus.com
 Semiconductor EDA & IP,Aldec,aldec.com
 Semiconductor EDA & IP,Altium,altium.com
+Semiconductor EDA & IP,Andes Technology,andestech.com
 Semiconductor EDA & IP,Ansys,ansys.com
 Semiconductor EDA & IP,ARM,arm.com
 Semiconductor EDA & IP,Cadence,cadence.com
 Semiconductor EDA & IP,CEVA,ceva-ip.com
 Semiconductor EDA & IP,Credo,credosemi.com
 Semiconductor EDA & IP,Dolphin-design,dolphin-design.com
+Semiconductor EDA & IP,Imagination Technologies,imaginationtech.com
+Semiconductor EDA & IP,Rambus,rambus.com
 Semiconductor EDA & IP,Siemens EDA,siemens.com
+Semiconductor EDA & IP,Silvaco,silvaco.com
 Semiconductor EDA & IP,Synopsys,synopsys.com
 Semiconductor EDA & IP,Zuken,zuken.com
 Semiconductor Equipment,Advantest,advantest.com
 Semiconductor Equipment,Aehr,aehr.com
 Semiconductor Equipment,Appliedmaterials,appliedmaterials.com
-Semiconductor Equipment,ASML,asm.com
+Semiconductor Equipment,ASM International,asm.com
 Semiconductor Equipment,ASML,asml.com
 Semiconductor Equipment,Axcelis,axcelis.com
 Semiconductor Equipment,Azenta,azenta.com
@@ -395,6 +416,7 @@ Semiconductor Equipment,Cohu,cohu.com
 Semiconductor Equipment,Disco,disco.co.jp
 Semiconductor Equipment,Ebara,ebara.com
 Semiconductor Equipment,Entegris,entegris.com
+Semiconductor Equipment,EV Group,evgroup.com
 Semiconductor Equipment,FormFactor,formfactor.com
 Semiconductor Equipment,Hitachi Hightech,hitachi-hightech.com
 Semiconductor Equipment,Ichor Systems,ichorsystems.com
@@ -402,10 +424,13 @@ Semiconductor Equipment,KLA,kla.com
 Semiconductor Equipment,Kokusai,kokusai-electric.com
 Semiconductor Equipment,Kulicke and Soffa,kns.com
 Semiconductor Equipment,LAM,lamresearch.com
+Semiconductor Equipment,Lasertec,lasertec.co.jp
 Semiconductor Equipment,MKS,mksinst.com
 Semiconductor Equipment,Nikon,nikon.com
+Semiconductor Equipment,Nordson,nordson.com
 Semiconductor Equipment,Novami,novami.com
 Semiconductor Equipment,Onto Innovation,ontoinnovation.com
+Semiconductor Equipment,SUSS MicroTec,suss.com
 Semiconductor Equipment,TEL,tel.com
 Semiconductor Equipment,Teradyne,teradyne.com
 Semiconductor Equipment,Ulvac,ulvac.com
@@ -413,19 +438,25 @@ Semiconductor Equipment,Veeco,veeco.com
 Semiconductor Manufacturing,Amkor Technology,amkor.com
 Semiconductor Manufacturing,Ams-osram,ams-osram.com
 Semiconductor Manufacturing,ASE,aseglobal.com
+Semiconductor Manufacturing,ASE,aseus.com
 Semiconductor Manufacturing,AT&S,ats.net
+Semiconductor Manufacturing,ChipMOS,chipmos.com
 Semiconductor Manufacturing,GlobalFoundries,globalfoundries.com
 Semiconductor Manufacturing,Ibiden,ibiden.com
 Semiconductor Manufacturing,JCET,jcetglobal.com
 Semiconductor Manufacturing,Kinsus,kinsus.com.tw
+Semiconductor Manufacturing,KYEC,kyec.com.tw
 Semiconductor Manufacturing,Nan Ya PCB,nanyapcb.com.tw
+Semiconductor Manufacturing,Powertech,pti.com.tw
 Semiconductor Manufacturing,Shinko,shinko.co.jp
 Semiconductor Manufacturing,SPIL,spil.com.tw
+Semiconductor Manufacturing,Tongfu,tfme.com
 Semiconductor Manufacturing,Tower Semiconductor,towersemi.com
 Semiconductor Manufacturing,TSMC,tsmc.com
 Semiconductor Manufacturing,UMC,umc.com
 Semiconductor Manufacturing,Unimicron,unimicron.com
 Semiconductor Manufacturing,Wolfspeed,wolfspeed.com
+Semiconductor Manufacturing,X-FAB,xfab.com
 Test and Measurement,Agilent,agilent.com
 Test and Measurement,Anritsu,anritsu.com
 Test and Measurement,Bruker,bruker.com
@@ -475,6 +506,7 @@ Venture Capital,Bosch Ventures,rbvc.com
 Venture Capital,BoxGroup,boxgroup.com
 Venture Capital,Cambium Capital,cambium.vc
 Venture Capital,Candou Ventures,candouventures.com
+Venture Capital,Carmel Ventures,carmelventures.com
 Venture Capital,Celesta Capital,celestacap.com
 Venture Capital,Cerberus,cerberus.com
 Venture Capital,Coatue,coatue.com
@@ -487,6 +519,7 @@ Venture Capital,Founders Fund,foundersfund.com
 Venture Capital,Fundomo,fundomo.com
 Venture Capital,General Catalyst,generalcatalyst.com
 Venture Capital,Google Ventures,gv.com
+Venture Capital,Grove Ventures,grovevc.com
 Venture Capital,Inflection,inflection.fund
 Venture Capital,Insight Partners,insightpartners.com
 Venture Capital,Intel Capital,intelcapital.com
@@ -520,5 +553,6 @@ Venture Capital,Sutter Hill Ventures,shv.com
 Venture Capital,Triatomic Capital,triatomic.capital
 Venture Capital,Tyche Partners,tychepartners.com
 Venture Capital,Vargas Holding,vargasholding.com
+Venture Capital,Viola,viola-group.com
 Venture Capital,Walden Catalyst,waldencatalyst.com
 Venture Capital,Walden International,waldenintl.com
