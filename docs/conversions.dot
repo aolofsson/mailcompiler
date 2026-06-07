@@ -1,0 +1,67 @@
+// mailcompiler: all conversions to and from the native JSON contacts database.
+//
+// JSON is the native store. Mailboxes / vCard / Outlook / LinkedIn import INTO
+// it; csv/xlsx/outlook/vcard are export VIEWS out of it. csv and xlsx double as
+// interchangeable native DB layouts.
+//
+// Render:  dot -Tsvg docs/conversions.dot -o docs/conversions.svg
+//          dot -Tpng docs/conversions.dot -o docs/conversions.png
+
+digraph mailcompiler_conversions {
+    rankdir=LR;
+    fontname="Helvetica";
+    labelloc="t";
+    label="mailcompiler — conversions to/from the JSON contacts database";
+    node [fontname="Helvetica", style=filled, fontsize=11];
+    edge [fontname="Helvetica", fontsize=9];
+
+    // --- the native database ---------------------------------------------
+    json [label="JSON\ncontacts DB\n(native store)",
+          shape=cylinder, fillcolor="#fde68a", penwidth=2];
+
+    // --- import sources (read-only inputs) -------------------------------
+    node [shape=box, fillcolor="#bfdbfe"];
+    mbox     [label="mbox\n(.mbox)"];
+    pst      [label="PST\n(.pst)"];
+    vcf_in   [label="vCard\n(.vcf/.vcd)"];
+    olk_in   [label="Outlook\nCSV/XLSX\n(--iformat outlook)"];
+    li_in    [label="LinkedIn\nConnections CSV\n(--iformat linkedin)"];
+
+    // --- native interchange layouts (both in and out) --------------------
+    node [shape=box, fillcolor="#d9f99d"];
+    csv_db   [label="CSV\n(native layout)"];
+    xlsx_db  [label="XLSX\n(native layout)"];
+
+    // --- export-only targets ---------------------------------------------
+    node [shape=box, fillcolor="#fbcfe8"];
+    csv_out  [label="CSV export"];
+    xlsx_out [label="XLSX export"];
+    olk_out  [label="Outlook\nCSV/XLSX export"];
+    vcf_out  [label="vCard\n(.vcf) export"];
+
+    // === imports: build/merge contacts into the DB =======================
+    mbox   -> json [label="mc import"];
+    pst    -> json [label="mc import"];
+    vcf_in -> json [label="mc import"];
+    olk_in -> json [label="mc import"];
+    li_in  -> json [label="mc import"];
+
+    // === native layouts fold in / round-trip =============================
+    csv_db  -> json [label="merge in"];
+    xlsx_db -> json [label="merge in"];
+    json    -> csv_db  [label="write", style=dashed];
+    json    -> xlsx_db [label="write", style=dashed];
+
+    // === reconcile + merge (json -> json, in place) ======================
+    json -> json [label="--reconcile\n(clean + dedup);\nmerge on re-import"];
+
+    // === exports: filtered views out of the DB ===========================
+    json -> csv_out  [label="export (+filters)"];
+    json -> xlsx_out [label="export (+filters)"];
+    json -> olk_out  [label="--oformat outlook"];
+    json -> vcf_out  [label="export (+filters)"];
+
+    // layout grouping
+    { rank=same; mbox; pst; vcf_in; olk_in; li_in; }
+    { rank=same; csv_out; xlsx_out; olk_out; vcf_out; }
+}

@@ -10,6 +10,8 @@ vCard and CSV.
 - Email client search functiosn are completely useless.
 - Email client import/output is are different shades of broken.
 
+See [docs/conversions.svg](docs/conversions.svg) for a diagram of all conversions to and from the JSON contacts database.
+
 ## Key features
 - Clean human readable JSON contact database
 - Fast import from Gmail Takeout `.mbox` and Outlook `.pst` (handles 20 GB+)
