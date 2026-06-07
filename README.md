@@ -150,6 +150,7 @@ usage: mc [-h] [-i INPUT] [-o OUTPUT]
           [--min-emails MIN_EMAILS] [--max-emails MAX_EMAILS]
           [--min-sent MIN_SENT] [--max-sent MAX_SENT]
           [--min-received MIN_RECEIVED] [--max-received MAX_RECEIVED]
+          [--min-ranking MIN_RANKING] [--max-ranking MAX_RANKING]
           [--last-after YYYY-MM-DD] [--last-before YYYY-MM-DD]
           [--first-after YYYY-MM-DD] [--first-before YYYY-MM-DD]
 
@@ -224,6 +225,10 @@ options:
                         minimum num_received
   --max-received MAX_RECEIVED
                         maximum num_received
+  --min-ranking MIN_RANKING
+                        minimum ranking (0-100)
+  --max-ranking MAX_RANKING
+                        maximum ranking (0-100)
   --last-after YYYY-MM-DD
                         last_interaction on or after this date
   --last-before YYYY-MM-DD
@@ -237,19 +242,22 @@ options:
 
 ## Database Record
 
-The database is a JSON array of contact records. Each record has the same 18
+The database is a JSON array of contact records. Each record has the same 24
 fields, in this order:
 
 ```json
 {
-  "category": "Semiconductor Devices",
-  "friend": "",
+  "id": "11111111-1111-1111-1111-111111111111",
   "last_name": "Vale",
   "first_name": "Jordan",
+  "friend": "",
   "title": "CTO",
   "company": "Globex",
-  "phone": "+16502530000",
+  "category": "Semiconductor Devices",
+  "primary_phone": "+16502530000",
+  "phone_numbers": ["+16502530000", "+14155550000"],
   "address": "10 Loop, Springfield CA",
+  "birthday": "1985-04-12",
   "primary_email": "jordan@globex.com",
   "emails": ["jordan@globex.com", "jordan.vale@globex.com"],
   "num_emails": 50,
@@ -259,21 +267,27 @@ fields, in this order:
   "last_interaction": "2025-03-15",
   "source": "work.mbox | takeout.mbox",
   "linkedin": "https://www.linkedin.com/in/jordanvale",
+  "github": "https://github.com/jvale",
+  "ranking": 75,
+  "notes": "Met at the 2025 conference.",
   "import_date": "2026-06-06"
 }
 ```
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `category` | string | Industry segment (e.g. `Semiconductor Devices`, `Defense`, `Venture Capital`, `Academic`), set automatically from the bundled yellowpages directory by email domain during `--reconcile`. Blank on import and for unlisted domains. |
-| `friend` | string | Annotation flag (e.g. `Y`); set from a vCard `friend` category, otherwise blank. |
+| `id` | string | Stable per-record UUID, minted when the record is first created and preserved across merges. |
 | `last_name` | string | Surname, derived from the display name. |
 | `first_name` | string | Given name, derived from the display name. |
+| `friend` | string | Annotation flag (e.g. `Y`); set from a vCard `friend` category, otherwise blank. |
 | `title` | string | Annotation you fill in (job title); set from a vCard `TITLE`, otherwise blank. |
 | `company` | string | Derived from the email domain; blank for free providers (gmail/yahoo/outlook/...). |
-| `phone` | string | Extracted from the email signature (or a vCard `TEL`), normalized to `+E.164`; blank if none found. |
+| `category` | string | Industry segment (e.g. `Semiconductor Devices`, `Defense`, `Venture Capital`, `Academic`), set automatically from the bundled yellowpages directory by email domain during `--reconcile`. Blank on import and for unlisted domains. |
+| `primary_phone` | string | The preferred phone number, normalized to `+E.164`; blank if none found. |
+| `phone_numbers` | string[] | All known numbers (email signature / vCard `TEL` / Outlook), primary first. |
 | `address` | string | Annotation you fill in; set from a vCard `ADR`/`LABEL`, otherwise blank. |
-| `primary_email` | string | The most-used address; the record's key. |
+| `birthday` | string | `YYYY-MM-DD`; annotation you fill in, or from a vCard `BDAY` / Outlook Birthday. Blank if unknown. |
+| `primary_email` | string | The most-used address; the merge key. |
 | `emails` | string[] | All known addresses for the person, primary first. |
 | `num_emails` | integer | Total direct messages exchanged (`num_sent` + `num_received`). 0 for a contact you only shared a thread with. |
 | `num_sent` | integer | Messages you sent to this contact. |
@@ -282,11 +296,15 @@ fields, in this order:
 | `last_interaction` | string\|null | Latest interaction date (`YYYY-MM-DD`), or `null` if unknown. |
 | `source` | string | Origin file(s) the record came from, joined by ` \| `. |
 | `linkedin` | string | LinkedIn profile URL; set by a LinkedIn import (`--iformat linkedin`), otherwise blank. |
+| `github` | string | GitHub profile URL/handle; annotation you fill in, or from a vCard `URL`. Blank otherwise. |
+| `ranking` | integer | Hand-set importance score `0`–`100` (default `0`); filterable with `--min-ranking`/`--max-ranking`. Merges keep the higher value. |
+| `notes` | string | Free-text annotation you fill in. Blank otherwise. |
 | `import_date` | string | Date (`YYYY-MM-DD`) of the most recent non-database import (mbox/PST/vCard/Outlook/LinkedIn) that touched this record; blank for purely database-derived rows. |
 
-The three annotation columns (`friend`, `title`, `address`) are left
-blank on a mailbox import for you to fill in by hand; they are preserved across
-re-imports and merges (see [Merging and `--force`](#merging-the-default-and---force)).
+The annotation columns (`friend`, `title`, `address`, `birthday`, `github`,
+`ranking`, `notes`) are left blank on a mailbox import for you to fill in by
+hand; they are preserved across re-imports and merges (see
+[Merging and `--force`](#merging-the-default-and---force)).
 (`category` is set automatically by `--reconcile`, not hand-filled.) The same
 fields are the columns of the CSV export, and map to the corresponding vCard
 properties on export.
@@ -359,11 +377,12 @@ Then, across all imported addresses:
 
 - Multiple addresses for the **same person** (matching display name) are merged
   into one row; the most-used address becomes the primary email.
-- `phone` is pulled from the contact's **email signature** in mail they sent you
-  (the signature region only -- bottom of the message / labeled lines). The
-  most-frequently-seen number is kept, validated and normalized to `+E.164` via
-  [phonenumbers](https://github.com/daviddrysdale/python-phonenumbers); numbers
-  written without a country code are assumed US.
+- `phone_numbers` are pulled from the contact's **email signature** in mail they
+  sent you (the signature region only -- bottom of the message / labeled lines),
+  validated and normalized to `+E.164` via
+  [phonenumbers](https://github.com/daviddrysdale/python-phonenumbers) (numbers
+  written without a country code are assumed US); the most-frequently-seen
+  number becomes `primary_phone`.
 - `company` is derived from the email domain (blank for free providers like
   gmail/yahoo/outlook), and each row records sent/received counts, the first and
   last interaction dates, and the `source` filename (the `.mbox`/`.pst` it came
@@ -520,8 +539,9 @@ mc -i data/contacts.json \
 ```
 
 The vCard maps name/emails (primary marked `PREF`), `company`->ORG,
-`title`->TITLE, `phone`->TEL, `address`->ADR/LABEL, and `category`/`friend`->
-CATEGORIES, plus a NOTE with the email counts and last-contact date.
+`title`->TITLE, `phone_numbers`->TEL (primary marked `PREF`), `birthday`->BDAY,
+`github`->URL, `address`->ADR/LABEL, and `category`/`friend`->CATEGORIES, plus a
+NOTE with the email counts, last-contact date, and `notes`.
 
 `--category` matches the industry segment assigned by `--reconcile` (e.g.
 `Semiconductor Devices`, `Defense`, `Venture Capital`, `Academic`). See `mc -h`
@@ -565,5 +585,6 @@ In order, reconcile:
 When duplicates are merged, `company`/`title` come from the **LinkedIn-sourced**
 record (LinkedIn is the authority on current employer); all other fields come
 from the record with the **newest `last_interaction`**. Counts sum, emails and
-sources union, dates widen. A record left with no email **and** no LinkedIn URL
-is dropped. Reconcile is idempotent -- running it again changes nothing.
+sources union, dates widen. A record left with no email, LinkedIn URL, **or**
+phone number is dropped. Reconcile is idempotent -- running it again changes
+nothing.
