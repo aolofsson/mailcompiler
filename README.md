@@ -10,7 +10,7 @@ vCard and CSV.
 - Email client search functiosn are completely useless.
 - Email client import/output is are different shades of broken.
 
-See [docs/conversions.svg](docs/conversions.svg) for a diagram of all conversions to and from the JSON contacts database.
+See [docs/mc_arch.svg](docs/mc_arch.svg) for a diagram of all conversions to and from the JSON contacts database.
 
 ## Key features
 - Clean human readable JSON contact database

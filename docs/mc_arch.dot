@@ -4,8 +4,8 @@
 // it; csv/xlsx/outlook/vcard are export VIEWS out of it. csv and xlsx double as
 // interchangeable native DB layouts.
 //
-// Render:  dot -Tsvg docs/conversions.dot -o docs/conversions.svg
-//          dot -Tpng docs/conversions.dot -o docs/conversions.png
+// Render:  ./docs/build_docs.sh
+//          (or: dot -Tsvg docs/mc_arch.dot -o docs/mc_arch.svg)
 
 digraph mailcompiler_conversions {
     rankdir=LR;

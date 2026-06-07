@@ -2,13 +2,12 @@
 #
 # build_docs.sh - regenerate all derived documentation artifacts from source.
 #
-# Currently: render every Graphviz .dot in docs/ to .svg and .png.
+# Lives in docs/; renders every Graphviz .dot alongside it to .svg and .png.
 # Add new source -> artifact conversions here as the docs grow.
 
 set -euo pipefail
 
 cd "$(dirname "$0")"
-DOCS_DIR="docs"
 
 command -v dot >/dev/null 2>&1 || {
     echo "error: graphviz 'dot' not found; install graphviz" >&2
@@ -16,9 +15,9 @@ command -v dot >/dev/null 2>&1 || {
 }
 
 shopt -s nullglob
-dots=("$DOCS_DIR"/*.dot)
+dots=(*.dot)
 if [ ${#dots[@]} -eq 0 ]; then
-    echo "no .dot sources in $DOCS_DIR/"
+    echo "no .dot sources in docs/"
 else
     for src in "${dots[@]}"; do
         base="${src%.dot}"
