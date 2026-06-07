@@ -10,58 +10,55 @@
 digraph mailcompiler_conversions {
     rankdir=LR;
     fontname="Helvetica";
-    labelloc="t";
-    label="mailcompiler — conversions to/from the JSON contacts database";
+    // even vertical spread within each column, wide gap between columns
+    nodesep=0.6;
+    ranksep=1.2;
     node [fontname="Helvetica", style=filled, fontsize=11];
     edge [fontname="Helvetica", fontsize=9];
 
-    // --- the native database ---------------------------------------------
-    json [label="JSON\ncontacts DB\n(native store)",
-          shape=cylinder, fillcolor="#fde68a", penwidth=2];
+    // Two-tone palette taken from the header logo (docs/postverket):
+    //   yellow = inputs (left), blue = outputs (right), grey = the JSON DB.
 
-    // --- import sources (read-only inputs) -------------------------------
-    node [shape=box, fillcolor="#bfdbfe"];
-    mbox     [label="mbox\n(.mbox)"];
-    pst      [label="PST\n(.pst)"];
-    vcf_in   [label="vCard\n(.vcf/.vcd)"];
-    olk_in   [label="Outlook\nCSV/XLSX\n(--iformat outlook)"];
-    li_in    [label="LinkedIn\nConnections CSV\n(--iformat linkedin)"];
+    // --- the native database (grey, center) ------------------------------
+    json [label="JSON\n Database",
+          shape=cylinder, fillcolor="#d1d1d1", penwidth=2];
 
-    // --- native interchange layouts (both in and out) --------------------
-    node [shape=box, fillcolor="#d9f99d"];
-    csv_db   [label="CSV\n(native layout)"];
-    xlsx_db  [label="XLSX\n(native layout)"];
+    // --- import sources (yellow, left) -----------------------------------
+    node [shape=ellipse, fillcolor="#FCC919", fontcolor="#1C4587"];
+    mbox     [label="mbox"];
+    pst      [label="PST"];
+    vcf_in   [label="vCard"];
+    olk_in   [label="Outlook\n(CSV)"];
+    li_in    [label="LinkedIn\n(CSV)"];
 
-    // --- export-only targets ---------------------------------------------
-    node [shape=box, fillcolor="#fbcfe8"];
-    csv_out  [label="CSV export"];
-    xlsx_out [label="XLSX export"];
-    olk_out  [label="Outlook\nCSV/XLSX export"];
-    vcf_out  [label="vCard\n(.vcf) export"];
+    // --- native layouts (read/write) + export targets (blue, right) ------
+    node [shape=ellipse, fillcolor="#1C4587", fontcolor="white"];
+    csv_db   [label="CSV\n"];
+    xlsx_db  [label="XLSX\n"];
+    olk_out  [label="Outlook\n(CSV)"];
+    vcf_out  [label="vCard"];
 
     // === imports: build/merge contacts into the DB =======================
-    mbox   -> json [label="mc import"];
-    pst    -> json [label="mc import"];
-    vcf_in -> json [label="mc import"];
-    olk_in -> json [label="mc import"];
-    li_in  -> json [label="mc import"];
+    mbox   -> json;
+    pst    -> json;
+    vcf_in -> json;
+    olk_in -> json;
+    li_in  -> json;
 
     // === native layouts fold in / round-trip =============================
-    csv_db  -> json [label="merge in"];
-    xlsx_db -> json [label="merge in"];
-    json    -> csv_db  [label="write", style=dashed];
-    json    -> xlsx_db [label="write", style=dashed];
+    csv_db  -> json;
+    xlsx_db -> json;
+    json    -> csv_db  [style=dashed];
+    json    -> xlsx_db [style=dashed];
 
     // === reconcile + merge (json -> json, in place) ======================
-    json -> json [label="--reconcile\n(clean + dedup);\nmerge on re-import"];
+    json -> json [label="--reconcile"];
 
     // === exports: filtered views out of the DB ===========================
-    json -> csv_out  [label="export (+filters)"];
-    json -> xlsx_out [label="export (+filters)"];
-    json -> olk_out  [label="--oformat outlook"];
-    json -> vcf_out  [label="export (+filters)"];
+    json -> olk_out;
+    json -> vcf_out;
 
-    // layout grouping
+    // layout grouping: one aligned column per side
     { rank=same; mbox; pst; vcf_in; olk_in; li_in; }
-    { rank=same; csv_out; xlsx_out; olk_out; vcf_out; }
+    { rank=same; csv_db; xlsx_db; olk_out; vcf_out; }
 }
