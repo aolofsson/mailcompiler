@@ -35,6 +35,7 @@ import json
 import os
 import re
 import sys
+import uuid
 from collections import Counter, defaultdict
 from datetime import date, timezone
 from email.parser import HeaderParser, Parser
@@ -428,10 +429,11 @@ class Rec:
 # ---- CSV output / additive merge -------------------------------------------
 # `category` holds the industry segment, set from the yellowpages directory by
 # email domain during --reconcile (Semiconductor, Defense, Venture Capital, ...).
-CSV_FIELDS = ["category", "friend", "last_name", "first_name", "title", "company",
-              "phone", "address", "primary_email", "emails", "num_emails",
-              "num_sent", "num_received", "first_interaction",
-              "last_interaction", "source", "linkedin", "import_date"]
+CSV_FIELDS = ["last_name", "first_name", "friend", "title", "company",
+              "category", "primary_phone", "phone_numbers", "address", "birthday",
+              "primary_email", "emails", "num_emails", "num_sent", "num_received",
+              "first_interaction", "last_interaction", "source", "linkedin",
+              "github", "ranking", "notes", "import_date", "id"]
 
 # Source values may contain spaces (mbox filenames), so they are joined with
 # this separator rather than a space (which the emails column uses).
@@ -445,17 +447,28 @@ def _to_int(v):
         return 0
 
 
+def _to_bool(v):
+    """Coerce a stored/imported flag to a real bool. Truthy: True, and the
+    strings Y/yes/true/t/1 (case-insensitive); everything else is False."""
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() in ("1", "true", "t", "y", "yes")
+
+
 def person_to_row(p, source):
     """Convert an in-memory person dict to a CSV row dict, tagged with source."""
     return {
-        "category": "",
-        "friend": "",
+        "id": str(uuid.uuid4()),
         "last_name": p["last_name"],
         "first_name": p["first_name"],
+        "friend": False,
         "title": "",
         "company": p["company"],
-        "phone": p.get("phone", ""),
+        "category": "",
+        "primary_phone": p.get("primary_phone", ""),
+        "phone_numbers": list(p.get("phone_numbers", [])),
         "address": "",
+        "birthday": "",
         "primary_email": p["primary_email"],
         "emails": list(p["emails"]),
         "num_emails": p["num_emails"],
@@ -465,6 +478,9 @@ def person_to_row(p, source):
         "last_interaction": p["last_interaction"],
         "source": source,
         "linkedin": "",
+        "github": "",
+        "ranking": 0,
+        "notes": "",
         "import_date": "",
     }
 
@@ -477,16 +493,30 @@ def _normalize_row(d):
     emails = d.get("emails")
     if not isinstance(emails, list):
         emails = (emails or "").split()
+    # phone_numbers as a list (JSON) or space-separated string (CSV); migrate a
+    # legacy single `phone` column into the list and the primary slot.
+    phone_numbers = d.get("phone_numbers")
+    if not isinstance(phone_numbers, list):
+        phone_numbers = (phone_numbers or "").split()
+    legacy_phone = str(d.get("phone") or "").strip()
+    if legacy_phone and legacy_phone not in phone_numbers:
+        phone_numbers = [legacy_phone] + phone_numbers
+    primary_phone = (str(d.get("primary_phone") or "").strip()
+                     or (phone_numbers[0] if phone_numbers else ""))
     return {
-        # read legacy "type" header so pre-rename CSV/JSON still load
-        "category": str(d.get("category") or d.get("type") or "").strip(),
-        "friend": str(d.get("friend") or "").strip(),
+        # `id` is a stable per-record handle; mint one for legacy/new rows.
+        "id": str(d.get("id") or "").strip() or str(uuid.uuid4()),
         "last_name": str(d.get("last_name") or "").strip(),
         "first_name": str(d.get("first_name") or "").strip(),
+        "friend": _to_bool(d.get("friend")),
         "title": str(d.get("title") or "").strip(),
         "company": str(d.get("company") or "").strip(),
-        "phone": str(d.get("phone") or "").strip(),
+        # read legacy "type" header so pre-rename CSV/JSON still load
+        "category": str(d.get("category") or d.get("type") or "").strip(),
+        "primary_phone": primary_phone,
+        "phone_numbers": list(phone_numbers),
         "address": str(d.get("address") or "").strip(),
+        "birthday": str(d.get("birthday") or "").strip(),
         "primary_email": str(d.get("primary_email") or "").strip(),
         "emails": list(emails),
         "num_emails": _to_int(d.get("num_emails")),
@@ -496,6 +526,9 @@ def _normalize_row(d):
         "last_interaction": (str(d.get("last_interaction") or "").strip() or None),
         "source": str(d.get("source") or "").strip(),
         "linkedin": str(d.get("linkedin") or "").strip(),
+        "github": str(d.get("github") or "").strip(),
+        "ranking": _to_int(d.get("ranking")),
+        "notes": str(d.get("notes") or "").strip(),
         "import_date": str(d.get("import_date") or "").strip(),
     }
 
@@ -550,11 +583,20 @@ def merge_row(existing, new, force=False):
     overwritten with the latest import; emails and sources union; the date range
     widens."""
     for f in ("category", "friend", "last_name", "first_name", "title", "company",
-              "phone", "address"):
-        existing[f] = (new[f] or existing[f]) if force else (existing[f] or new[f])
+              "primary_phone", "address", "birthday", "github", "linkedin", "notes"):
+        nv, ev = new.get(f, ""), existing.get(f, "")
+        existing[f] = (nv or ev) if force else (ev or nv)
     for e in new["emails"]:
         if e not in existing["emails"]:
             existing["emails"].append(e)
+    for ph in new.get("phone_numbers", []):
+        if ph not in existing["phone_numbers"]:
+            existing["phone_numbers"].append(ph)
+    # ranking is a hand-set 0-100 score; keep the higher of the two.
+    existing["ranking"] = max(_to_int(existing.get("ranking")),
+                              _to_int(new.get("ranking")))
+    # id is stable: keep the existing one (mint only if somehow absent).
+    existing["id"] = existing.get("id") or new.get("id") or str(uuid.uuid4())
     existing["num_emails"] = new["num_emails"]
     existing["num_sent"] = new["num_sent"]
     existing["num_received"] = new["num_received"]
@@ -563,8 +605,6 @@ def merge_row(existing, new, force=False):
     existing["last_interaction"] = _merge_date(
         existing["last_interaction"], new["last_interaction"], newest=True)
     existing["source"] = _union_sources(existing["source"], new["source"])
-    nl, el = new.get("linkedin", ""), existing.get("linkedin", "")
-    existing["linkedin"] = (nl or el) if force else (el or nl)
     # import_date reflects the most recent import that touched this record.
     existing["import_date"] = new.get("import_date") or existing.get("import_date", "")
 
@@ -580,13 +620,17 @@ def _write_atomic(path, write_fn):
 
 def _native_cells(r):
     """Row cells for the native full-column layout, in CSV_FIELDS order."""
-    return [r.get("category", ""), r.get("friend", ""), r["last_name"],
-            r["first_name"], r.get("title", ""), r["company"],
-            r.get("phone", ""), r.get("address", ""), r["primary_email"],
+    return [r["last_name"], r["first_name"],
+            bool(r.get("friend")), r.get("title", ""), r["company"],
+            r.get("category", ""), r.get("primary_phone", ""),
+            " ".join(r.get("phone_numbers") or []), r.get("address", ""),
+            r.get("birthday", ""), r["primary_email"],
             " ".join(r["emails"]), r["num_emails"], r["num_sent"],
             r["num_received"], r["first_interaction"] or "",
             r["last_interaction"] or "", r.get("source", ""),
-            r.get("linkedin", ""), r.get("import_date", "")]
+            r.get("linkedin", ""), r.get("github", ""),
+            _to_int(r.get("ranking")), r.get("notes", ""),
+            r.get("import_date", ""), r.get("id", "")]
 
 
 def write_csv_rows(path, rows):
@@ -650,7 +694,7 @@ def write_xlsx_rows(path, rows):
 # Microsoft Outlook's CSV import/export header names (the subset we map).
 OUTLOOK_FIELDS = ["First Name", "Last Name", "Job Title", "Company",
                   "E-mail Address", "E-mail 2 Address", "E-mail 3 Address",
-                  "Business Phone", "Business Street"]
+                  "Business Phone", "Business Street", "Birthday"]
 
 
 def _outlook_cells(r):
@@ -662,7 +706,8 @@ def _outlook_cells(r):
     e1, e2, e3 = (ordered + ["", "", ""])[:3]
     return [r.get("first_name", ""), r.get("last_name", ""),
             r.get("title", ""), r.get("company", ""),
-            e1, e2, e3, r.get("phone", ""), r.get("address", "")]
+            e1, e2, e3, r.get("primary_phone", ""), r.get("address", ""),
+            r.get("birthday", "")]
 
 
 def _outlook_row_from_dict(raw, source):
@@ -675,14 +720,17 @@ def _outlook_row_from_dict(raw, source):
         r.get("business street", ""), r.get("business city", ""),
         r.get("business state", ""), r.get("business postal code", ""),
         r.get("business country", "")) if p)
-    phone = r.get("business phone", "") or r.get("mobile phone", "")
+    phones = [p for p in (r.get("business phone", ""),
+                          r.get("mobile phone", "")) if p]
     row = _normalize_row({
         "first_name": r.get("first name", ""),
         "last_name": r.get("last name", ""),
         "title": r.get("job title", ""),
         "company": r.get("company", ""),
-        "phone": phone,
+        "primary_phone": phones[0] if phones else "",
+        "phone_numbers": phones,
         "address": addr,
+        "birthday": r.get("birthday", ""),
         "primary_email": emails[0] if emails else "",
         "emails": emails,
         "source": source,
@@ -794,6 +842,8 @@ def build_criteria(args):
         "max_sent": args.max_sent,
         "min_received": args.min_received,
         "max_received": args.max_received,
+        "min_ranking": args.min_ranking,
+        "max_ranking": args.max_ranking,
         "last_after": args.last_after,
         "last_before": args.last_before,
         "first_after": args.first_after,
@@ -817,6 +867,7 @@ def matches(contact, crit):
         ("num_emails", crit["min_emails"], crit["max_emails"]),
         ("num_sent", crit["min_sent"], crit["max_sent"]),
         ("num_received", crit["min_received"], crit["max_received"]),
+        ("ranking", crit["min_ranking"], crit["max_ranking"]),
     ):
         val = contact.get(field, 0) or 0
         if lo is not None and val < lo:
@@ -1403,18 +1454,19 @@ def _new_linkedin_row(entry, run_date):
     """Build a fresh contact row from a LinkedIn entry (may be email-less)."""
     email = (entry.get("email") or "").strip().lower()
     return {
-        "category": "", "friend": "",
+        "id": str(uuid.uuid4()),
         "last_name": clean(entry.get("last", "")),
         "first_name": clean(entry.get("first", "")),
-        "title": entry.get("position", ""),
-        "company": entry.get("company", ""),
-        "phone": "", "address": "",
+        "friend": False, "title": entry.get("position", ""),
+        "company": entry.get("company", ""), "category": "",
+        "primary_phone": "", "phone_numbers": [], "address": "", "birthday": "",
         "primary_email": email,
         "emails": [email] if email else [],
         "num_emails": 0, "num_sent": 0, "num_received": 0,
         "first_interaction": None, "last_interaction": None,
         "source": "linkedin",
         "linkedin": entry.get("url", ""),
+        "github": "", "ranking": 0, "notes": "",
         "import_date": run_date,
     }
 
@@ -1558,6 +1610,11 @@ def _merge_group(rows):
         for e in r["emails"]:
             if e not in emails:
                 emails.append(e)
+    phone_numbers = []
+    for r in rows:
+        for ph in r.get("phone_numbers") or []:
+            if ph not in phone_numbers:
+                phone_numbers.append(ph)
     source = ""
     first = last = None
     for r in rows:
@@ -1565,20 +1622,27 @@ def _merge_group(rows):
         first = _merge_date(first, r.get("first_interaction"), newest=False)
         last = _merge_date(last, r.get("last_interaction"), newest=True)
     return {
-        "category": _join_distinct(r["category"] for r in rows),
-        "friend": _join_distinct(r["friend"] for r in rows),
+        "id": next((r.get("id") for r in rows if r.get("id")), "") or str(uuid.uuid4()),
         "last_name": winner["last_name"],
         "first_name": winner["first_name"],
+        "friend": any(bool(r.get("friend")) for r in rows),
         "title": _join_distinct(r["title"] for r in rows),
         "company": _join_distinct(r["company"] for r in rows),
-        "phone": _join_distinct(r["phone"] for r in rows),
+        "category": _join_distinct(r["category"] for r in rows),
+        "primary_phone": (winner.get("primary_phone")
+                          or (phone_numbers[0] if phone_numbers else "")),
+        "phone_numbers": phone_numbers,
         "address": _join_distinct(r["address"] for r in rows),
+        "birthday": _join_distinct(r.get("birthday", "") for r in rows),
         "primary_email": winner["primary_email"],
         "emails": emails,
         "num_emails": sum(r["num_emails"] for r in rows),
         "num_sent": sum(r["num_sent"] for r in rows),
         "num_received": sum(r["num_received"] for r in rows),
         "linkedin": next((r.get("linkedin") for r in rows if r.get("linkedin")), ""),
+        "github": next((r.get("github") for r in rows if r.get("github")), ""),
+        "ranking": max((_to_int(r.get("ranking")) for r in rows), default=0),
+        "notes": _join_distinct(r.get("notes", "") for r in rows),
         "import_date": max((r.get("import_date") or "") for r in rows),
         "first_interaction": first,
         "last_interaction": last,
@@ -1813,9 +1877,11 @@ def _reconcile_merge(group, log=None):
             merged[f] = li[f]
         elif not str(merged.get(f) or "").strip():
             merged[f] = first_nonblank(f)
-    for f in ("first_name", "last_name", "phone", "address", "category", "friend"):
+    for f in ("first_name", "last_name", "primary_phone", "address", "category",
+              "birthday", "github", "notes"):
         if not str(merged.get(f) or "").strip():
             merged[f] = first_nonblank(f)
+    merged["friend"] = any(bool(r.get("friend")) for r in group)
 
     emails = []
     for r in [base] + list(group):
@@ -1824,6 +1890,14 @@ def _reconcile_merge(group, log=None):
             if e and e.lower() not in (x.lower() for x in emails):
                 emails.append(e)
     merged["emails"] = emails
+    phone_numbers = []
+    for r in [base] + list(group):
+        for ph in [r.get("primary_phone", "")] + list(r.get("phone_numbers") or []):
+            ph = (ph or "").strip()
+            if ph and ph not in phone_numbers:
+                phone_numbers.append(ph)
+    merged["phone_numbers"] = phone_numbers
+    merged["ranking"] = max((_to_int(r.get("ranking")) for r in group), default=0)
     merged["num_sent"] = sum(int(r.get("num_sent") or 0) for r in group)
     merged["num_received"] = sum(int(r.get("num_received") or 0) for r in group)
     merged["num_emails"] = merged["num_sent"] + merged["num_received"]
@@ -1908,8 +1982,8 @@ def reconcile_contacts(rows, log=None):
     """Clean and merge a contacts DB: drop junk addresses, merge duplicates by
     shared email and by name, recompute derived fields, pick the best primary
     email, and normalize names/phones. Records missing a first or last name, or
-    with no email and no LinkedIn URL, are dropped. Returns sorted rows. If `log`
-    is given, it is called with a one-line message for every action taken."""
+    with no email, LinkedIn URL, or phone number, are dropped. Returns sorted
+    rows. If `log` is given, it is called with a one-line message per action."""
     rows = [dict(r) for r in rows]
     # 1. drop junk addresses; re-point primary if it was dropped
     for r in rows:
@@ -1975,24 +2049,44 @@ def reconcile_contacts(rows, log=None):
                 log("recover surname: %s last %r -> %r (from email)"
                     % (_record_label(r), old_ln, new_ln))
             r["last_name"] = new_ln
-        old_ph = r.get("phone", "")
-        r["phone"] = _normalize_phone(old_ph)
-        if log and r["phone"] != old_ph:
+        old_pns = list(r.get("phone_numbers") or [])
+        norm_pns = []
+        for ph in old_pns:
+            n = _normalize_phone(ph)
+            if n and n not in norm_pns:
+                norm_pns.append(n)
+        r["phone_numbers"] = norm_pns
+        old_pp = r.get("primary_phone", "")
+        r["primary_phone"] = _normalize_phone(old_pp) or (norm_pns[0]
+                                                          if norm_pns else "")
+        if r["primary_phone"] and r["primary_phone"] not in norm_pns:
+            norm_pns.insert(0, r["primary_phone"])
+        if log and r["primary_phone"] != old_pp:
             log("normalize phone: %r -> %r (%s)"
-                % (old_ph, r["phone"], _record_label(r)))
+                % (old_pp, r["primary_phone"], _record_label(r)))
         old_pe = r.get("primary_email") or ""
         r["primary_email"] = _pick_primary(r)
         if log and r["primary_email"] != old_pe:
             log("pick primary: %s -> %s (%s)"
                 % (old_pe or "<none>", r["primary_email"] or "<none>",
                    _record_label(r)))
-        # the contact is anchored by name: keep any full-name record even with a
-        # blank email (a stale corporate primary is blanked by _pick_primary).
+        # Drop a record that has no way to reach the person: no email, no
+        # LinkedIn URL, and no phone number (a stale corporate primary may have
+        # been blanked above by _pick_primary).
         has_name = (str(r.get("first_name") or "").strip()
                     and str(r.get("last_name") or "").strip())
+        has_contact = bool((r.get("primary_email") or "").strip()
+                           or r.get("emails")
+                           or (r.get("linkedin") or "").strip()
+                           or (r.get("primary_phone") or "").strip()
+                           or r.get("phone_numbers"))
         if not has_name:
             if log:
                 log("drop record: %s (missing first or last name)"
+                    % _record_label(r))
+        elif not has_contact:
+            if log:
+                log("drop record: %s (no email, LinkedIn, or phone)"
                     % _record_label(r))
         else:
             out.append(r)
@@ -2148,8 +2242,16 @@ def _contact_vcard(row):
         typ = "INTERNET,PREF" if i == 0 else "INTERNET"
         props.append("EMAIL;TYPE=%s:%s" % (typ, email))
 
-    if row.get("phone"):
-        props.append("TEL;TYPE=VOICE:" + row["phone"])
+    pphone = row.get("primary_phone") or ""
+    ordered_ph = ([pphone] if pphone else [])
+    ordered_ph += [p for p in (row.get("phone_numbers") or []) if p and p != pphone]
+    for i, ph in enumerate(ordered_ph):
+        typ = "VOICE,PREF" if i == 0 else "VOICE"
+        props.append("TEL;TYPE=%s:%s" % (typ, ph))
+    if row.get("birthday"):
+        props.append("BDAY:" + _vcard_escape(row["birthday"]))
+    if row.get("github"):
+        props.append("URL:" + _vcard_escape(row["github"]))
     if row.get("address"):
         addr = _vcard_escape(row["address"])
         props.append("ADR;TYPE=WORK:;;%s;;;;" % addr)
@@ -2163,6 +2265,8 @@ def _contact_vcard(row):
                               row.get("last_interaction") or "?")
     if row.get("source"):
         note += "; source: " + row["source"]
+    if row.get("notes"):
+        note += "; " + row["notes"]
     props.append("NOTE:" + _vcard_escape(note))
 
     cats = [c for c in (row.get("category") or "",
@@ -2241,17 +2345,21 @@ def _vcard_to_row(card, source):
     primary = card["pref_email"] or (card["emails"][0] if card["emails"] else "")
     emails = ([primary] if primary else [])
     emails += [e for e in card["emails"] if e and e != primary and e not in emails]
-    category, friend = "", ""
+    category, friend = "", False
     for c in card["categories"]:
         if c.lower() == "friend":
-            friend = "Y"
+            friend = True
         elif not category:
             category = c
     if not (first or last or primary):
         return None
+    tels = card["tels"]
+    primary_tel = card["pref_tel"] or (tels[0] if tels else "")
     return _normalize_row({
         "category": category, "friend": friend, "first_name": first, "last_name": last,
-        "title": card["title"], "company": card["org"], "phone": card["tel"],
+        "title": card["title"], "company": card["org"],
+        "primary_phone": primary_tel, "phone_numbers": tels,
+        "birthday": card["bday"], "github": card["github"],
         "address": card["label"] or card["adr"], "primary_email": primary,
         "emails": emails, "source": source,
     })
@@ -2266,9 +2374,9 @@ def parse_vcards(path):
     for line in _unfold_vcard_lines(text):
         s = line.strip()
         if s.upper() == "BEGIN:VCARD":
-            card = {"emails": [], "pref_email": "", "tel": "", "n": None,
-                    "fn": "", "org": "", "title": "", "adr": "", "label": "",
-                    "categories": []}
+            card = {"emails": [], "pref_email": "", "tels": [], "pref_tel": "",
+                    "n": None, "fn": "", "org": "", "title": "", "adr": "",
+                    "label": "", "bday": "", "github": "", "categories": []}
             continue
         if s.upper() == "END:VCARD":
             if card is not None:
@@ -2298,8 +2406,17 @@ def parse_vcards(path):
                 if "PREF" in params:
                     card["pref_email"] = addr
         elif name == "TEL":
-            if not card["tel"]:
-                card["tel"] = _vcard_unescape(value).strip()
+            tel = _vcard_unescape(value).strip()
+            if tel:
+                card["tels"].append(tel)
+                if "PREF" in params:
+                    card["pref_tel"] = tel
+        elif name == "BDAY":
+            card["bday"] = _vcard_unescape(value).strip()
+        elif name == "URL":
+            url = _vcard_unescape(value).strip()
+            if "github" in url.lower() and not card["github"]:
+                card["github"] = url
         elif name == "ADR":
             comps = [_vcard_unescape(c).strip() for c in _vcard_split(value, ";")]
             card["adr"] = ", ".join(c for c in comps if c)
@@ -2502,13 +2619,14 @@ def cmd_import(args, ifmt, ofmt):
         primary = max(merged.emails, key=merged.emails.get)
         display = max(merged.names, key=merged.names.get) if merged.names else ""
         first, last = split_name(display, primary)
-        # phone = most-frequently-seen signature number, if any
-        phone = max(merged.phones, key=merged.phones.get) if merged.phones else ""
+        # phone numbers = all signature numbers, most-frequent first (primary).
+        phone_numbers = sorted(merged.phones, key=lambda p: -merged.phones[p])
         return {
             "first_name": first,
             "last_name": last,
             "company": company_from(primary),
-            "phone": phone,
+            "primary_phone": phone_numbers[0] if phone_numbers else "",
+            "phone_numbers": phone_numbers,
             "primary_email": primary,
             "emails": sorted(merged.emails, key=lambda e: -merged.emails[e]),
             "display_name": display,
@@ -2716,6 +2834,8 @@ def parse_args(argv=None):
     p.add_argument("--max-sent", type=int, help="maximum num_sent")
     p.add_argument("--min-received", type=int, help="minimum num_received")
     p.add_argument("--max-received", type=int, help="maximum num_received")
+    p.add_argument("--min-ranking", type=int, help="minimum ranking (0-100)")
+    p.add_argument("--max-ranking", type=int, help="maximum ranking (0-100)")
     p.add_argument("--last-after", dest="last_after", metavar="YYYY-MM-DD",
                    help="last_interaction on or after this date")
     p.add_argument("--last-before", dest="last_before", metavar="YYYY-MM-DD",

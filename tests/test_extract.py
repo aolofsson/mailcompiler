@@ -14,7 +14,7 @@ CONTACTS = [
      "emails": ["jordan@globex.com", "jordan.vale@globex.com"],
      "num_emails": 50, "num_sent": 30, "num_received": 20,
      "first_interaction": "2023-01-01", "last_interaction": "2025-03-15"},
-    {"first_name": "Anna", "last_name": "Lee", "company": "Initech", "type": "customer",
+    {"first_name": "Anna", "last_name": "Lee", "company": "Initech", "category": "Defense",
      "primary_email": "anna.lee@initech.com", "emails": ["anna.lee@initech.com"],
      "num_emails": 12, "num_sent": 6, "num_received": 6,
      "first_interaction": "2024-02-10", "last_interaction": "2026-01-09"},
@@ -55,19 +55,19 @@ class TestTextFilters:
 _BASE = ["-i", "x.json", "-o", "out.csv"]
 
 
-class TestTypeFilter:
-    def test_type_match(self):
-        c = build_criteria(parse_args(_BASE + ["--type", "customer"]))
+class TestCategoryFilter:
+    def test_category_match(self):
+        c = build_criteria(parse_args(_BASE + ["--category", "Defense"]))
         assert [x["first_name"] for x in CONTACTS if matches(x, c)] == ["Anna"]
 
-    def test_no_type_flag_matches_all(self):
+    def test_no_category_flag_matches_all(self):
         c = build_criteria(parse_args(_BASE))
         assert len([x for x in CONTACTS if matches(x, c)]) == len(CONTACTS)
 
-    def test_type_combines_with_other_filters(self):
+    def test_category_combines_with_other_filters(self):
         c = build_criteria(parse_args(
-            _BASE + ["--type", "customer", "--company", "Globex"]))
-        # Anna is customer but not Globex; nobody is both -> none.
+            _BASE + ["--category", "Defense", "--company", "Globex"]))
+        # Anna is Defense but not Globex; nobody is both -> none.
         assert [x["first_name"] for x in CONTACTS if matches(x, c)] == []
 
 

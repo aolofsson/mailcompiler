@@ -247,10 +247,9 @@ fields, in this order:
 
 ```json
 {
-  "id": "11111111-1111-1111-1111-111111111111",
   "last_name": "Vale",
   "first_name": "Jordan",
-  "friend": "",
+  "friend": true,
   "title": "CTO",
   "company": "Globex",
   "category": "Semiconductor Devices",
@@ -270,16 +269,16 @@ fields, in this order:
   "github": "https://github.com/jvale",
   "ranking": 75,
   "notes": "Met at the 2025 conference.",
-  "import_date": "2026-06-06"
+  "import_date": "2026-06-06",
+  "id": "11111111-1111-1111-1111-111111111111"
 }
 ```
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `id` | string | Stable per-record UUID, minted when the record is first created and preserved across merges. |
 | `last_name` | string | Surname, derived from the display name. |
 | `first_name` | string | Given name, derived from the display name. |
-| `friend` | string | Annotation flag (e.g. `Y`); set from a vCard `friend` category, otherwise blank. |
+| `friend` | boolean | Annotation flag; set from a vCard `friend` category. On import the values `Y`/`1`/`true`/`yes` (case-insensitive) become `true`, everything else `false`. |
 | `title` | string | Annotation you fill in (job title); set from a vCard `TITLE`, otherwise blank. |
 | `company` | string | Derived from the email domain; blank for free providers (gmail/yahoo/outlook/...). |
 | `category` | string | Industry segment (e.g. `Semiconductor Devices`, `Defense`, `Venture Capital`, `Academic`), set automatically from the bundled yellowpages directory by email domain during `--reconcile`. Blank on import and for unlisted domains. |
@@ -300,6 +299,7 @@ fields, in this order:
 | `ranking` | integer | Hand-set importance score `0`–`100` (default `0`); filterable with `--min-ranking`/`--max-ranking`. Merges keep the higher value. |
 | `notes` | string | Free-text annotation you fill in. Blank otherwise. |
 | `import_date` | string | Date (`YYYY-MM-DD`) of the most recent non-database import (mbox/PST/vCard/Outlook/LinkedIn) that touched this record; blank for purely database-derived rows. |
+| `id` | string | Stable per-record UUID, minted when the record is first created and preserved across merges. |
 
 The annotation columns (`friend`, `title`, `address`, `birthday`, `github`,
 `ranking`, `notes`) are left blank on a mailbox import for you to fill in by

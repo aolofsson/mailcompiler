@@ -4,6 +4,7 @@ import csv
 import json
 import os
 import tempfile
+import uuid
 from collections import defaultdict
 
 from mailcompiler.mailcompiler import (
@@ -114,9 +115,10 @@ class TestIsBlacklisted:
 class TestMergeRow:
     def _existing(self):
         return {
-            "type": "customer", "friend": "Y", "last_name": "Lee",
+            "category": "Defense", "friend": True, "last_name": "Lee",
             "first_name": "Anna",
-            "title": "VP", "company": "Initech", "phone": "+16502530000",
+            "title": "VP", "company": "Initech", "primary_phone": "+16502530000",
+            "phone_numbers": ["+16502530000"],
             "address": "1 Main St", "primary_email": "anna@initech.com",
             "emails": ["anna@initech.com"], "num_emails": 10, "num_sent": 4,
             "num_received": 6, "first_interaction": "2023-01-01",
@@ -125,8 +127,9 @@ class TestMergeRow:
 
     def _new(self):
         return {
-            "type": "", "friend": "", "last_name": "Lee", "first_name": "Anna",
-            "title": "Director", "company": "Initech", "phone": "+14155552671",
+            "category": "", "friend": False, "last_name": "Lee", "first_name": "Anna",
+            "title": "Director", "company": "Initech", "primary_phone": "+14155552671",
+            "phone_numbers": ["+14155552671"],
             "address": "", "primary_email": "anna@initech.com",
             "emails": ["anna@initech.com", "anna.lee@initech.com"],
             "num_emails": 5, "num_sent": 2, "num_received": 3,
@@ -141,10 +144,10 @@ class TestMergeRow:
         assert e["num_sent"] == 2
         assert e["num_received"] == 3
 
-    def test_type_and_text_preserved(self):
+    def test_category_and_text_preserved(self):
         e = self._existing()
         merge_row(e, self._new())
-        assert e["type"] == "customer"   # hand-edited field not clobbered
+        assert e["category"] == "Defense"   # hand-edited field not clobbered
         assert e["title"] == "VP"        # existing title kept over the new one
 
     def test_emails_union_and_dates_widen(self):
@@ -171,20 +174,20 @@ class TestMergeRow:
     def test_phone_preserved(self):
         e = self._existing()                 # has +16502530000
         merge_row(e, self._new())            # new has a different phone
-        assert e["phone"] == "+16502530000"  # existing value kept
+        assert e["primary_phone"] == "+16502530000"  # existing value kept
 
     def test_phone_filled_when_empty(self):
         e = self._existing()
-        e["phone"] = ""
+        e["primary_phone"] = ""
         merge_row(e, self._new())
-        assert e["phone"] == "+14155552671"
+        assert e["primary_phone"] == "+14155552671"
 
     def test_force_overwrites_text(self):
         e = self._existing()
         merge_row(e, self._new(), force=True)
-        assert e["type"] == "customer"      # new is blank -> existing kept
+        assert e["category"] == "Defense"      # new is blank -> existing kept
         assert e["title"] == "Director"     # new non-empty -> overwrites
-        assert e["phone"] == "+14155552671"  # new non-empty -> overwrites
+        assert e["primary_phone"] == "+14155552671"  # new non-empty -> overwrites
         assert e["emails"] == ["anna@initech.com", "anna.lee@initech.com"]
 
 
@@ -196,20 +199,24 @@ class TestPersonToRow:
              "first_interaction": "2024-01-01", "last_interaction": "2024-01-01"}
         row = person_to_row(p, "All mail.mbox")
         assert row["source"] == "All mail.mbox"
-        assert row["type"] == ""
+        assert row["category"] == ""
 
 
 class TestRoundTrip:
     ROWS = [{
-        "type": "customer", "friend": "Y", "last_name": "Vale",
+        "id": "11111111-1111-1111-1111-111111111111",
+        "category": "Defense", "friend": True, "last_name": "Vale",
         "first_name": "Jordan",
-        "title": "CTO", "company": "Globex", "phone": "+16502530000",
+        "title": "CTO", "company": "Globex", "primary_phone": "+16502530000",
+        "phone_numbers": ["+16502530000"], "birthday": "1985-04-12",
         "address": "10 Loop, CA", "primary_email": "jordan@globex.com",
         "emails": ["jordan@globex.com", "jordan.vale@globex.com"],
         "num_emails": 3, "num_sent": 2, "num_received": 1,
         "first_interaction": "2023-01-01", "last_interaction": "2024-05-05",
         "source": "a.mbox | b.mbox",
-        "linkedin": "https://www.linkedin.com/in/jordanvale", "import_date": "2026-06-06",
+        "linkedin": "https://www.linkedin.com/in/jordanvale",
+        "github": "https://github.com/jvale", "ranking": 75, "notes": "key contact",
+        "import_date": "2026-06-06",
     }]
 
     def _roundtrip(self, ext):
@@ -235,7 +242,7 @@ class TestRoundTrip:
         # CSV preserves the same values (emails re-split, ints re-parsed)
         assert r["emails"] == ["jordan@globex.com", "jordan.vale@globex.com"]
         assert r["num_sent"] == 2 and r["num_received"] == 1
-        assert r["type"] == "customer" and r["source"] == "a.mbox | b.mbox"
+        assert r["category"] == "Defense" and r["source"] == "a.mbox | b.mbox"
         assert r["last_interaction"] == "2024-05-05"
 
     def test_xlsx_roundtrip(self):
@@ -243,7 +250,7 @@ class TestRoundTrip:
         r = back[0]
         assert r["emails"] == ["jordan@globex.com", "jordan.vale@globex.com"]
         assert r["num_sent"] == 2 and r["num_received"] == 1
-        assert r["type"] == "customer" and r["source"] == "a.mbox | b.mbox"
+        assert r["category"] == "Defense" and r["source"] == "a.mbox | b.mbox"
 
     def test_json_csv_xlsx_all_equal(self):
         # The three native formats carry identical information.
@@ -495,14 +502,18 @@ class TestPstMessageFields:
 
 def _row(first="", last="", company="", phone="", ctype="", primary="",
          emails=None, n_emails=0, n_sent=0, n_recv=0, first_i=None, last_i=None,
-         source="", title="", address="", friend=""):
-    return {"type": ctype, "friend": friend, "last_name": last,
-            "first_name": first, "title": title, "company": company,
-            "phone": phone, "address": address, "primary_email": primary,
+         source="", title="", address="", friend=False, birthday="", github="",
+         ranking=0, notes=""):
+    return {"id": str(uuid.uuid4()), "last_name": last, "first_name": first,
+            "friend": friend, "title": title, "company": company,
+            "category": ctype,
+            "primary_phone": phone, "phone_numbers": [phone] if phone else [],
+            "address": address, "birthday": birthday, "primary_email": primary,
             "emails": emails if emails is not None else ([primary] if primary else []),
             "num_emails": n_emails, "num_sent": n_sent, "num_received": n_recv,
             "first_interaction": first_i, "last_interaction": last_i,
-            "source": source}
+            "source": source, "linkedin": "", "github": github,
+            "ranking": ranking, "notes": notes, "import_date": ""}
 
 
 class TestJoinDistinct:
@@ -515,14 +526,14 @@ class TestJoinDistinct:
 
 class TestMergeGroup:
     def _pair(self):
-        r1 = _row("Jane", "Roe", "Acme", "+16175550000", "customer",
+        r1 = _row("Jane", "Roe", "Acme", "+16175550000", "Defense",
                   "jane@acme.com", ["jane@acme.com"], 40, 30, 10,
                   "2022-01-01", "2024-01-01", "a.mbox", title="VP",
-                  address="1 Main", friend="Y")
-        r2 = _row("Jane", "Roe", "Acme2", "+14155550000", "competitor",
+                  address="1 Main", friend=True)
+        r2 = _row("Jane", "Roe", "Acme2", "+14155550000", "Aerospace",
                   "jane@gmail.com", ["jane@gmail.com"], 3, 2, 1,
                   "2021-06-01", "2025-05-05", "b.mbox", title="Director",
-                  address="2 Oak", friend="")
+                  address="2 Oak", friend=False)
         return r1, r2
 
     def test_counts_summed(self):
@@ -537,9 +548,10 @@ class TestMergeGroup:
     def test_conflicts_joined_and_flags_kept(self):
         m = _merge_group(list(self._pair()))
         assert m["company"] == "Acme | Acme2"
-        assert m["phone"] == "+16175550000 | +14155550000"
-        assert m["type"] == "customer | competitor"
-        assert m["friend"] == "Y"
+        assert m["primary_phone"] == "+16175550000"          # winner's number
+        assert m["phone_numbers"] == ["+16175550000", "+14155550000"]
+        assert m["category"] == "Defense | Aerospace"
+        assert m["friend"] is True
         assert m["title"] == "VP | Director"
         assert m["address"] == "1 Main | 2 Oak"
         assert m["source"] == "a.mbox | b.mbox"
@@ -591,10 +603,10 @@ class TestVcard:
         assert folded.replace("\r\n ", "") == line   # no char was split
 
     def test_contact_vcard_fields(self):
-        row = _row("Jane", "Roe", "Acme", "+16175550000", "customer",
+        row = _row("Jane", "Roe", "Acme", "+16175550000", "Defense",
                    "jane@acme.com", ["jane@acme.com", "jane@gmail.com"],
                    40, 30, 10, "2022-01-01", "2024-01-01", "a.mbox",
-                   title="VP", address="1 Main St", friend="Y")
+                   title="VP", address="1 Main St", friend=True)
         lines = _contact_vcard(row)
         assert lines[0] == "BEGIN:VCARD" and lines[-1] == "END:VCARD"
         assert "VERSION:3.0" in lines
@@ -603,8 +615,8 @@ class TestVcard:
         assert "ORG:Acme" in lines and "TITLE:VP" in lines
         assert "EMAIL;TYPE=INTERNET,PREF:jane@acme.com" in lines
         assert "EMAIL;TYPE=INTERNET:jane@gmail.com" in lines
-        assert "TEL;TYPE=VOICE:+16175550000" in lines
-        assert "CATEGORIES:customer,friend" in lines
+        assert "TEL;TYPE=VOICE,PREF:+16175550000" in lines
+        assert "CATEGORIES:Defense,friend" in lines
         assert any(ln.startswith("NOTE:") for ln in lines)
 
     def test_write_vcards_file(self):
@@ -633,7 +645,7 @@ EMAIL;TYPE=INTERNET,HOME:alex.personal@example.com
 TEL;TYPE=CELL,VOICE,PREF:+1-555-0199
 ADR;TYPE=WORK,PREF:;;123 Business Rd;Boston;MA;02110;USA
 NOTE:Met at the 2026 tech conference.
-CATEGORIES:customer,friend
+CATEGORIES:Defense,friend
 END:VCARD
 """
 
@@ -662,14 +674,14 @@ class TestVcardImport:
         assert r["title"] == "Account Executive"
         assert r["primary_email"] == "alex.smith@acme.example.com"   # PREF
         assert "alex.personal@example.com" in r["emails"]
-        assert r["phone"] == "+1-555-0199"
+        assert r["primary_phone"] == "+1-555-0199"
         assert "Boston" in r["address"]
-        assert r["type"] == "customer" and r["friend"] == "Y"
+        assert r["category"] == "Defense" and r["friend"] is True
 
     def test_roundtrip_write_then_parse(self):
-        rows = [_row("Jane", "Roe", "Acme", "+16175550000", "customer",
+        rows = [_row("Jane", "Roe", "Acme", "+16175550000", "Defense",
                      "jane@acme.com", ["jane@acme.com", "jane@gmail.com"],
-                     title="VP", address="1 Main St", friend="Y")]
+                     title="VP", address="1 Main St", friend=True)]
         path = _write_tmp("", ".vcf")
         try:
             write_vcards(path, rows)
@@ -682,8 +694,8 @@ class TestVcardImport:
         assert b["primary_email"] == "jane@acme.com"
         assert b["emails"] == ["jane@acme.com", "jane@gmail.com"]
         assert b["company"] == "Acme" and b["title"] == "VP"
-        assert b["phone"] == "+16175550000"
-        assert b["type"] == "customer" and b["friend"] == "Y"
+        assert b["primary_phone"] == "+16175550000"
+        assert b["category"] == "Defense" and b["friend"] is True
 
 
 OUTLOOK_VCF_CSV = (
@@ -695,7 +707,7 @@ OUTLOOK_VCF_CSV = (
 
 class TestOutlookCsv:
     def test_write_outlook_csv(self):
-        rows = [_row("Jane", "Roe", "Acme", "+16175550000", "customer",
+        rows = [_row("Jane", "Roe", "Acme", "+16175550000", "Defense",
                      "jane@acme.com", ["jane@acme.com", "jane@gmail.com"],
                      title="VP", address="1 Main St")]
         path = _write_tmp("", ".csv")
@@ -724,13 +736,13 @@ class TestOutlookCsv:
         r = rows[0]
         assert (r["first_name"], r["last_name"]) == ("Alex", "Smith")
         assert r["title"] == "Account Executive" and r["company"] == "Acme Corp"
-        assert r["phone"] == "+1-555-0199"
+        assert r["primary_phone"] == "+1-555-0199"
         assert r["emails"] == ["alex@acme.com", "alex2@acme.com"]
         assert r["address"] == "123 Business Rd, Boston, MA"
-        assert r["type"] == "" and r["friend"] == "" and r["num_emails"] == 0
+        assert r["category"] == "" and r["friend"] is False and r["num_emails"] == 0
 
     def test_roundtrip(self):
-        rows = [_row("Jane", "Roe", "Acme", "+16175550000", "customer",
+        rows = [_row("Jane", "Roe", "Acme", "+16175550000", "Defense",
                      "jane@acme.com", ["jane@acme.com", "jane@gmail.com"],
                      title="VP", address="1 Main St")]
         path = _write_tmp("", ".csv")
@@ -742,10 +754,10 @@ class TestOutlookCsv:
         b = back[0]
         assert (b["first_name"], b["last_name"]) == ("Jane", "Roe")
         assert b["company"] == "Acme" and b["title"] == "VP"
-        assert b["phone"] == "+16175550000"
+        assert b["primary_phone"] == "+16175550000"
         assert b["emails"] == ["jane@acme.com", "jane@gmail.com"]
         assert b["address"] == "1 Main St"
-        assert b["type"] == "" and b["num_emails"] == 0   # not carried by Outlook
+        assert b["category"] == "" and b["num_emails"] == 0   # not carried by Outlook
 
 
 class TestXlsx:
@@ -776,7 +788,7 @@ class TestXlsx:
         assert r["num_emails"] == 5
 
     def test_outlook_xlsx_roundtrip(self):
-        rows = [_row("Alex", "Smith", "Acme", "+15550199", "customer",
+        rows = [_row("Alex", "Smith", "Acme", "+15550199", "Defense",
                      "alex@acme.com", ["alex@acme.com", "alex2@acme.com"],
                      title="AE", address="123 Business Rd")]
         path = _write_tmp("", ".xlsx")
@@ -788,7 +800,7 @@ class TestXlsx:
         b = back[0]
         assert (b["first_name"], b["last_name"]) == ("Alex", "Smith")
         assert b["company"] == "Acme" and b["title"] == "AE"
-        assert b["phone"] == "+15550199"
+        assert b["primary_phone"] == "+15550199"
         assert b["emails"] == ["alex@acme.com", "alex2@acme.com"]
         assert b["address"] == "123 Business Rd"
 
@@ -1096,7 +1108,7 @@ class TestMergeIsDefault:
 
     def test_import_does_not_wipe_existing_db(self):
         # Pre-existing DB with a hand-edited contact.
-        db = [_row(first="Ann", last="Base", company="Acme", ctype="customer",
+        db = [_row(first="Ann", last="Base", company="Acme", ctype="Defense",
                    primary="ann@acme.com", n_recv=1)]
         dbp = _write_tmp(json.dumps(db), ".json")
         mp = _write_tmp(self._mbox(), ".mbox")
@@ -1107,7 +1119,7 @@ class TestMergeIsDefault:
             for p in (dbp, mp):
                 os.remove(p)
         assert "ann@acme.com" in got              # existing kept (not wiped)
-        assert got["ann@acme.com"]["type"] == "customer"
+        assert got["ann@acme.com"]["category"] == "Defense"
         assert "bob@x.com" in got                 # new import folded in
 
     def test_db_to_json_folds_not_overwrites(self):
@@ -1241,8 +1253,14 @@ class TestReconcile:
         out = reconcile_contacts([r])
         assert len(out) == 1 and out[0]["linkedin"] == "https://x/in/lia"
 
-    def test_drops_emailless_no_linkedin(self):
-        r = _row(first="Ghost", last="None")
+    def test_keeps_phone_only(self):
+        r = _row(first="Tel", last="Only", phone="+16175550000")
+        r["primary_email"], r["emails"] = "", []
+        out = reconcile_contacts([r])
+        assert len(out) == 1 and out[0]["primary_phone"] == "+16175550000"
+
+    def test_drops_no_email_linkedin_or_phone(self):
+        r = _row(first="Ghost", last="None")  # no email, LinkedIn, or phone
         r["primary_email"], r["emails"] = "", []
         assert reconcile_contacts([r]) == []
 
@@ -1381,3 +1399,65 @@ class TestMcDbDefault:
             self._restore_env(old)
             os.remove(src)
         assert raised
+
+
+class TestNewSchemaFields:
+    def test_id_minted_and_stable_across_merge(self):
+        e = _row(first="Jane", last="Roe", primary="jane@example.com",
+                 emails=["jane@example.com"], n_recv=2)
+        new = _row(first="Jane", last="Roe", primary="jane@example.com",
+                   emails=["jane@example.com"], n_recv=1)
+        assert e["id"] and new["id"] and e["id"] != new["id"]
+        original = e["id"]
+        merge_row(e, new)
+        assert e["id"] == original          # existing id is preserved on merge
+
+    def test_legacy_phone_migrates_to_pair(self):
+        # A pre-rename DB row carries a single "phone"; loading splits it into
+        # primary_phone + phone_numbers and keeps the value.
+        legacy = {"first_name": "Lee", "last_name": "Old",
+                  "phone": "+16175550000", "primary_email": "lee@example.com",
+                  "emails": ["lee@example.com"]}
+        path = _write_tmp(json.dumps([legacy]), ".json")
+        try:
+            r = load_rows(path)[0]
+        finally:
+            os.remove(path)
+        assert r["primary_phone"] == "+16175550000"
+        assert r["phone_numbers"] == ["+16175550000"]
+        assert "phone" not in r
+
+    def test_phone_numbers_union_on_merge(self):
+        e = _row(first="Sam", last="Vale", phone="+16175550000",
+                 primary="sam@example.com", emails=["sam@example.com"])
+        new = _row(first="Sam", last="Vale", phone="+14155550000",
+                   primary="sam@example.com", emails=["sam@example.com"])
+        merge_row(e, new)
+        assert e["phone_numbers"] == ["+16175550000", "+14155550000"]
+
+    def test_ranking_kept_max_and_filter(self):
+        from mailcompiler.mailcompiler import build_criteria, parse_args, matches
+        e = _row(first="A", last="B", primary="a@example.com", ranking=80)
+        new = _row(first="A", last="B", primary="a@example.com", ranking=20)
+        merge_row(e, new)
+        assert e["ranking"] == 80            # higher hand-set score wins
+        base = ["-i", "x.json", "-o", "out.csv"]
+        c = build_criteria(parse_args(base + ["--min-ranking", "50"]))
+        assert matches(e, c)
+        assert not matches(_row(first="C", last="D", primary="c@example.com",
+                                ranking=10), c)
+
+    def test_birthday_github_notes_roundtrip(self):
+        row = _row(first="Dana", last="Vale", primary="dana@example.com",
+                   emails=["dana@example.com"], birthday="1990-05-01",
+                   github="https://github.com/dvale", notes="met at a conference")
+        for ext, fmt in ((".json", "json"), (".csv", "csv"), (".xlsx", "xlsx")):
+            path = _write_tmp("", ext)
+            try:
+                write_contacts_as(path, [row], fmt)
+                back = load_rows(path)[0]
+            finally:
+                os.remove(path)
+            assert back["birthday"] == "1990-05-01"
+            assert back["github"] == "https://github.com/dvale"
+            assert back["notes"] == "met at a conference"
