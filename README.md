@@ -32,20 +32,12 @@
 There's one command, `mc`, and one lossless read/write JSON database.
 
 ```bash
-pip install -e .                           # install the `mc` command
+pip install mailcompiler                   # install the `mc` command
 export MC_DB=~/contacts.json               # set database location
 mc -i takeout.mbox                         # import mbox contacts
 mc -i connections.csv --iformat linkedin   # merge in linkedin connections
 mc --reconcile                             # clean + merge duplicates
 mc -o profit.xlsx                          # export to excel
-```
-
-## Installation
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
 ```
 
 ## Examples
