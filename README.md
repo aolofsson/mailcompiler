@@ -32,7 +32,7 @@
 `mc` has four commands -- `import`, `export`, `reconcile`, `scrape` -- over one
 lossless JSON database, set once via `--db` or `$MC_DB`.
 
-```bash
+```
 pip install mailcompiler                       # install the `mc` command
 export MC_DB=~/contacts.json                   # where the database lives
 mc import takeout.mbox                         # import mbox contacts
