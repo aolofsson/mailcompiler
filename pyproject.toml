@@ -1,26 +1,36 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "mailcompiler"
 version = "0.1.0"
-description = "Contact list management tool"
+description = "Aggregate, de-duplicate and clean contacts from mailboxes, CSV, Outlook, LinkedIn and vCard into one JSON database"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "Proprietary" }
-authors = [{ name = "Andreas Olofsson", email = "andreas@zeroasic.com" }]
-keywords = ["email", "mbox", "contacts", "crm", "sales", "marketing"]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Andreas Olofsson", email = "andreas.d.olofsson@gmail.com" }]
+keywords = ["email", "mbox", "pst", "contacts", "crm", "vcard", "address-book"]
 classifiers = [
-    "Private :: Do Not Upload",
-    "License :: Other/Proprietary License",
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Operating System :: POSIX :: Linux",
+    "Topic :: Communications :: Email",
+    "Topic :: Office/Business",
 ]
 dependencies = ["libpff-python>=20231205", "phonenumbers>=8", "openpyxl>=3"]
 
 [project.optional-dependencies]
 dev = ["flake8>=7", "pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/aolofsson/mailcompiler"
+Repository = "https://github.com/aolofsson/mailcompiler"
+Issues = "https://github.com/aolofsson/mailcompiler/issues"
 
 [project.scripts]
 mc = "mailcompiler.mailcompiler:main"

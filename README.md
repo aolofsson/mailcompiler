@@ -19,7 +19,7 @@
 - Lossless import/export between xlsx/csv files and the JSON database
 - Streaming `.mbox` into an LLM-friendly JSON corpus
 - Automatic extraction of email conversations into contacts
-- Automatic extraction of phone numbers from email signatures
+- Optional, opt-in phone-number mining from email signatures (`--discover-phones`)
 - Incremental, non-destructive merging into a JSON database
 - Deduplication and reconciliation of records
 - Automatic industry categorization from a built-in [yellowpages directory](mailcompiler/yellowpages.csv)
@@ -143,9 +143,10 @@ mc -o leads.xlsx                 # export: -i defaults to $MC_DB
 usage: mc [-h] [-i INPUT] [-o OUTPUT]
           [--iformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}]
           [--oformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}]
-          [--reconcile] [-v] [--force] [--llm] [--max-body BYTES] [--no-cc]
-          [--whitelist PATH [PATH ...]] [--blacklist PATH [PATH ...]]
-          [--category CATEGORY] [--company COMPANY] [--first-name FIRST_NAME]
+          [--reconcile] [-v] [--force] [--self-phone LIST] [--discover-phones]
+          [--llm] [--max-body BYTES] [--no-cc] [--whitelist PATH [PATH ...]]
+          [--blacklist PATH [PATH ...]] [--category CATEGORY]
+          [--company COMPANY] [--first-name FIRST_NAME]
           [--last-name LAST_NAME] [--email-domain EMAIL_DOMAIN]
           [--min-emails MIN_EMAILS] [--max-emails MAX_EMAILS]
           [--min-sent MIN_SENT] [--max-sent MAX_SENT]
@@ -187,6 +188,21 @@ options:
                         overwrite the existing text fields (company, title,
                         name, ...) with the incoming values; by default
                         existing (hand-edited) values are kept
+  --self-phone LIST     your own phone number(s) (comma-separated; also read
+                        from $MC_SELF_PHONE) to never ingest as a contact's
+                        number -- they leak into records via quoted signatures
+  --discover-phones     (mailbox import; OFF by default) mine phone numbers
+                        from the signature region of received mail -- the tail
+                        of the body below a '-- ' marker / above the quoted
+                        reply -- and credit the most-frequent number to the
+                        sender. HEURISTIC AND ERROR-PRONE: a signature quoted
+                        at the bottom of a reply thread is easily
+                        misattributed, so ~15%+ of discovered numbers are
+                        wrong (one number can spread across many contacts).
+                        Structured imports (vCard/Outlook/LinkedIn) always
+                        keep their phone fields regardless. Pair with --self-
+                        phone; reconcile drops numbers shared across many
+                        contacts.
   --llm                 dump a per-email JSONL corpus
                         (subject/from/to/date/body) from an mbox/PST instead
                         of building the DB
@@ -283,7 +299,7 @@ fields, in this order:
 | `company` | string | Derived from the email domain; blank for free providers (gmail/yahoo/outlook/...). |
 | `category` | string | Industry segment (e.g. `Semiconductor Devices`, `Defense`, `Venture Capital`, `Academic`), set automatically from the bundled yellowpages directory by email domain during `--reconcile`. Blank on import and for unlisted domains. |
 | `primary_phone` | string | The preferred phone number, normalized to `+E.164`; blank if none found. |
-| `phone_numbers` | string[] | All known numbers (email signature / vCard `TEL` / Outlook), primary first. |
+| `phone_numbers` | string[] | All known numbers, primary first. From vCard `TEL` / Outlook columns, or (only with `--discover-phones`) mined from mail signatures. |
 | `address` | string | Annotation you fill in; set from a vCard `ADR`/`LABEL`, otherwise blank. |
 | `birthday` | string | `YYYY-MM-DD`; annotation you fill in, or from a vCard `BDAY` / Outlook Birthday. Blank if unknown. |
 | `primary_email` | string | The most-used address; the merge key. |
@@ -377,12 +393,17 @@ Then, across all imported addresses:
 
 - Multiple addresses for the **same person** (matching display name) are merged
   into one row; the most-used address becomes the primary email.
-- `phone_numbers` are pulled from the contact's **email signature** in mail they
+- `phone_numbers` are **not** mined from mail by default. With **`--discover-phones`**
+  (opt-in) they are pulled from the contact's **email signature** in mail they
   sent you (the signature region only -- bottom of the message / labeled lines),
   validated and normalized to `+E.164` via
   [phonenumbers](https://github.com/daviddrysdale/python-phonenumbers) (numbers
   written without a country code are assumed US); the most-frequently-seen
-  number becomes `primary_phone`.
+  number becomes `primary_phone`. This is **heuristic and error-prone** (~15%+
+  of mined numbers are misattributed, e.g. a quoted signature credited to the
+  wrong person), so it is off by default. Pass `--self-phone` to exclude your
+  own number, and note that `--reconcile` drops any number shared across many
+  contacts. Phones from vCard/Outlook/LinkedIn imports are always kept.
 - `company` is derived from the email domain (blank for free providers like
   gmail/yahoo/outlook), and each row records sent/received counts, the first and
   last interaction dates, and the `source` filename (the `.mbox`/`.pst` it came

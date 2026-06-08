@@ -1124,7 +1124,7 @@ def _normalize_dt(dt):
     return dt
 
 
-def _ingest_message(msg, recs, self_set, include_cc=True):
+def _ingest_message(msg, recs, self_set, include_cc=True, discover_phones=False):
     """Fold one normalized message into `recs`/`self_set`.
 
     Returns False if the message was skipped (spam or trash), True otherwise. By default
@@ -1132,6 +1132,8 @@ def _ingest_message(msg, recs, self_set, include_cc=True):
     not the sender) are also recorded so they become contacts, but they do not
     count as sent or received -- only direct correspondence increments those.
     Pass include_cc=False (the --no-cc flag) to skip those co-recipients.
+    Signature phone mining is off unless discover_phones=True (--discover-phones);
+    it is heuristic and can misattribute numbers from quoted signatures.
     """
     # Skip Spam (unsolicited) and Trash (mail the user deleted) -- neither is
     # real correspondence, so their senders/recipients are not contacts.
@@ -1150,7 +1152,7 @@ def _ingest_message(msg, recs, self_set, include_cc=True):
             self_set.add(a)
         groups = [(msg["to"], "num_sent", [])]   # never trust our own signature
     else:
-        phones = _extract_phones(msg.get("body", ""))
+        phones = _extract_phones(msg.get("body", "")) if discover_phones else []
         groups = [(msg["from"], "num_recv", phones)]
         if include_cc:
             # Co-recipients on mail I received (To/Cc minus the sender): include
@@ -2044,12 +2046,61 @@ def _merge_by_name(rows, log=None):
     return out
 
 
-def reconcile_contacts(rows, log=None):
+# A phone number attributed to more than this many distinct contacts is treated
+# as leaked/shared (a signature quoted across many threads, or a company main
+# line) -- not a personal number -- and dropped from every record. Phone
+# extraction from signature regions is heuristic and a quoted signature at the
+# bottom of a reply thread is easily misattributed to the wrong person, so this
+# guards against one number (e.g. your own) spreading across the database.
+PHONE_SHARE_LIMIT = 3
+
+
+def _resolve_self_phones(args):
+    """The account owner's own phone number(s), to never ingest as a contact's:
+    from --self-phone (comma/space separated) or $MC_SELF_PHONE, normalized to
+    +E.164. Returns a set (possibly empty)."""
+    raw = (getattr(args, "self_phone", None) or "") + " " \
+        + os.environ.get("MC_SELF_PHONE", "")
+    out = set()
+    for tok in re.split(r"[,\s]+", raw):
+        n = _normalize_phone(tok)
+        if n:
+            out.add(n)
+    return out
+
+
+def _drop_shared_phones(rows, self_phones=frozenset(), limit=PHONE_SHARE_LIMIT,
+                        log=None):
+    """Remove leaked/shared numbers from every record's phone fields: any number
+    on more than `limit` distinct contacts, plus the owner's `self_phones`. Each
+    record's primary_phone is re-picked from what remains. Mutates rows in place."""
+    counts = Counter()
+    for r in rows:
+        for ph in set(r.get("phone_numbers") or []):
+            counts[ph] += 1
+    deny = set(self_phones) | {ph for ph, c in counts.items() if c > limit}
+    if not deny:
+        return
+    for r in rows:
+        pns = r.get("phone_numbers") or []
+        kept = [p for p in pns if p not in deny]
+        if kept != pns:
+            if log:
+                log("drop shared/self phone: %s removed %s"
+                    % (_record_label(r), [p for p in pns if p in deny]))
+            r["phone_numbers"] = kept
+            if (r.get("primary_phone") or "") not in kept:
+                r["primary_phone"] = kept[0] if kept else ""
+
+
+def reconcile_contacts(rows, log=None, self_phones=frozenset()):
     """Clean and merge a contacts DB: drop junk addresses, merge duplicates by
     shared email and by name, recompute derived fields, pick the best primary
-    email, and normalize names/phones. Records missing a first or last name, or
-    with no email, LinkedIn URL, or phone number, are dropped. Returns sorted
-    rows. If `log` is given, it is called with a one-line message per action."""
+    email, and normalize names/phones. Leaked/shared phone numbers (on many
+    contacts, or the owner's own) are dropped. Records missing a first or last
+    name, or left with no email, LinkedIn URL, or phone number, are dropped.
+    Returns sorted rows. If `log` is given, it gets a one-line message per
+    action."""
     rows = [dict(r) for r in rows]
     # 1. drop junk addresses; re-point primary if it was dropped
     for r in rows:
@@ -2158,6 +2209,10 @@ def reconcile_contacts(rows, log=None):
             out.append(r)
     _canonicalize_companies(out, log)
     _apply_yellowpages(out, log)        # authoritative: set category + official company by domain
+    _drop_shared_phones(out, self_phones, log=log)
+    # a phone-only contact whose only number was a shared/self leak now has no
+    # way to reach it -> drop it (same keep rule as above).
+    out = [r for r in out if _record_key(r)]
     out.sort(key=_contact_sort_key)
     return out
 
@@ -2602,16 +2657,27 @@ def cmd_import(args, ifmt, ofmt):
     def vlog(reason, email, extra=""):
         sys.stderr.write("  discard %-12s %s%s\n" % (reason, email, extra))
 
+    self_phones = _resolve_self_phones(args)   # never ingest the owner's number
     recs = defaultdict(Rec)  # primary email -> Rec
     n_msgs = 0
     n_skip_spam = 0
+
+    discover_phones = getattr(args, "discover_phones", False)
+    if discover_phones:
+        sys.stderr.write(
+            "warning: --discover-phones mines numbers from email signatures. "
+            "This is heuristic and error-prone (~15%+ of discovered numbers are "
+            "misattributed -- typically a quoted signature credited to the wrong "
+            "person). Review results; --self-phone and reconcile's shared-number "
+            "drop reduce but do not eliminate the errors.\n")
 
     # Pick the reader by extension: .pst -> Outlook, otherwise mbox.
     src = iter_pst_messages(path) if pst else iter_mbox_messages(path)
     for msg in src:
         n_msgs += 1
         if not _ingest_message(msg, recs, self_set,
-                               include_cc=not getattr(args, "no_cc", False)):
+                               include_cc=not getattr(args, "no_cc", False),
+                               discover_phones=discover_phones):
             n_skip_spam += 1
             if verbose:                  # the only skip path is spam/trash
                 reason = "spam" if msg["is_spam"] else "trash"
@@ -2685,8 +2751,11 @@ def cmd_import(args, ifmt, ofmt):
         primary = max(merged.emails, key=merged.emails.get)
         display = max(merged.names, key=merged.names.get) if merged.names else ""
         first, last = split_name(display, primary)
-        # phone numbers = all signature numbers, most-frequent first (primary).
-        phone_numbers = sorted(merged.phones, key=lambda p: -merged.phones[p])
+        # phone numbers = all signature numbers, most-frequent first (primary);
+        # the owner's own number(s) are never a contact's, so drop them.
+        phone_numbers = [p for p in sorted(merged.phones,
+                                           key=lambda p: -merged.phones[p])
+                         if _normalize_phone(p) not in self_phones]
         return {
             "first_name": first,
             "last_name": last,
@@ -2781,7 +2850,8 @@ def cmd_db(args, ofmt):
     if args.reconcile:
         rlog = (lambda m: sys.stderr.write("  reconcile: " + m + "\n")) \
             if getattr(args, "verbose", False) else None
-        rows = reconcile_contacts(rows, log=rlog)
+        rows = reconcile_contacts(rows, log=rlog,
+                                  self_phones=_resolve_self_phones(args))
         extra = " then reconciled"
     else:
         extra = ""
@@ -2857,6 +2927,23 @@ def parse_args(argv=None):
                         "overwrite the existing text fields (company, title, "
                         "name, ...) with the incoming values; by default existing "
                         "(hand-edited) values are kept")
+    p.add_argument("--self-phone", dest="self_phone", metavar="LIST",
+                   help="your own phone number(s) (comma-separated; also read "
+                        "from $MC_SELF_PHONE) to never ingest as a contact's "
+                        "number -- they leak into records via quoted signatures")
+    p.add_argument("--discover-phones", dest="discover_phones",
+                   action="store_true",
+                   help="(mailbox import; OFF by default) mine phone numbers from "
+                        "the signature region of received mail -- the tail of the "
+                        "body below a '-- ' marker / above the quoted reply -- and "
+                        "credit the most-frequent number to the sender. HEURISTIC "
+                        "AND ERROR-PRONE: a signature quoted at the bottom of a "
+                        "reply thread is easily misattributed, so ~15%%+ of "
+                        "discovered numbers are wrong (one number can spread "
+                        "across many contacts). Structured imports (vCard/Outlook/"
+                        "LinkedIn) always keep their phone fields regardless. Pair "
+                        "with --self-phone; reconcile drops numbers shared across "
+                        "many contacts.")
     p.add_argument("--llm", action="store_true",
                    help="dump a per-email JSONL corpus (subject/from/to/date/"
                         "body) from an mbox/PST instead of building the DB")

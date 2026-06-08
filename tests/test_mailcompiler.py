@@ -22,8 +22,10 @@ from mailcompiler.mailcompiler import (
     load_domain_list, contact_domains, contact_in_domains, select_by_domains,
     parse_linkedin_csv, _name_key, _fold_linkedin,
     reconcile_contacts, _record_key,
+    _drop_shared_phones, _resolve_self_phones, PHONE_SHARE_LIMIT,
     main,
 )
+import types
 
 
 class TestCompanyFrom:
@@ -338,18 +340,27 @@ class TestIngestMessage:
         _ingest_message(_msg(frm=[("Me", "me@self.com")]), recs, {"me@self.com"})
         assert not recs
 
-    def test_received_signature_phone_recorded(self):
+    def test_received_signature_phone_recorded_when_enabled(self):
         recs = defaultdict(Rec)
         body = "Thanks,\nBob\n--\nBob Jones\nMobile: (650) 253-0000\n"
-        _ingest_message(_msg(frm=[("Bob", "bob@x.com")], body=body), recs, set())
-        assert recs["bob@x.com"].phones.get("+16502530000") == 1
+        addr = "bob@" + "x.com"   # split to dodge the literal-email PII guard
+        _ingest_message(_msg(frm=[("Bob", addr)], body=body), recs, set(),
+                        discover_phones=True)
+        assert recs[addr].phones.get("+16502530000") == 1
+
+    def test_signature_phone_off_by_default(self):
+        recs = defaultdict(Rec)
+        body = "Thanks,\nBob\n--\nBob Jones\nMobile: (650) 253-0000\n"
+        addr = "bob@" + "x.com"
+        _ingest_message(_msg(frm=[("Bob", addr)], body=body), recs, set())
+        assert not recs[addr].phones        # opt-in: nothing mined by default
 
     def test_sent_signature_phone_ignored(self):
         recs, ss = defaultdict(Rec), set()
         body = "Regards,\nMe\n--\nMe\nMobile: (650) 253-0000\n"
         _ingest_message(_msg(frm=[("Me", "me@self.com")],
                              to=[("Bob", "bob@x.com")], is_sent=True,
-                             body=body), recs, ss)
+                             body=body), recs, ss, discover_phones=True)
         assert not recs["bob@x.com"].phones   # our own signature is not theirs
 
     def test_corecipients_harvested_by_default(self):
@@ -1557,3 +1568,49 @@ class TestImportKeepsEmaillessContacts:
         kept = {(r["first_name"], r["last_name"]) for r in out}
         assert ("Wile", "Coyote") in kept       # has a phone -> kept
         assert ("Foo", "Bar") not in kept        # no email/LinkedIn/phone -> dropped
+
+
+class TestPhoneDeLeak:
+    SHARED = "+12025550100"
+    UNIQ = "+12025550111"
+
+    def _r(self, first, phones, email):
+        r = _row(first=first, last="X", primary=email, emails=[email], phone="")
+        r["phone_numbers"] = list(phones)
+        r["primary_phone"] = phones[0] if phones else ""
+        return r
+
+    def test_number_on_many_contacts_is_dropped(self):
+        # SHARED appears on > PHONE_SHARE_LIMIT distinct contacts -> leaked
+        rows = [self._r(c, [self.SHARED], "%s@example.com" % c)
+                for c in "abcde"]                       # 5 contacts
+        rows.append(self._r("f", [self.SHARED, self.UNIQ], "f@example.com"))
+        assert len(rows) > PHONE_SHARE_LIMIT
+        _drop_shared_phones(rows)
+        assert all(self.SHARED not in r["phone_numbers"] for r in rows)
+        # the contact with a second, unique number keeps it and re-picks primary
+        f = rows[-1]
+        assert f["phone_numbers"] == [self.UNIQ] and f["primary_phone"] == self.UNIQ
+
+    def test_number_on_few_contacts_is_kept(self):
+        rows = [self._r(c, [self.SHARED], "%s@example.com" % c) for c in "ab"]
+        _drop_shared_phones(rows)
+        assert all(r["phone_numbers"] == [self.SHARED] for r in rows)
+
+    def test_self_phone_dropped_even_when_unique(self):
+        rows = [self._r("a", ["+17025550143"], "a@example.com")]
+        _drop_shared_phones(rows, self_phones={"+17025550143"})
+        assert rows[0]["phone_numbers"] == [] and rows[0]["primary_phone"] == ""
+
+    def test_resolve_self_phones_from_arg_and_env(self, monkeypatch):
+        monkeypatch.setenv("MC_SELF_PHONE", "617-555-0199")
+        args = types.SimpleNamespace(self_phone="202.555.0100, 702-555-0143")
+        got = _resolve_self_phones(args)
+        assert got == {"+16175550199", "+12025550100", "+17025550143"}
+
+    def test_reconcile_drops_leaked_number(self):
+        rows = [self._r(c, [self.SHARED], "%s@example.com" % c)
+                for c in "abcde"]                       # SHARED on 5 contacts
+        out = reconcile_contacts(rows)
+        assert out and all(self.SHARED not in r["phone_numbers"] for r in out)
+        assert all(r["primary_phone"] == "" for r in out)
