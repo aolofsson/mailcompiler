@@ -1199,6 +1199,7 @@ def iter_mbox_messages(path, body_cap=BODY_CAP):
             dt = None
         return {
             "subject": dec(m.get("Subject") or ""),
+            "message_id": (m.get("Message-ID") or "").strip().strip("<>").strip(),
             "from": getaddresses(m.get_all("From", [])),
             "to": getaddresses(m.get_all("To", []) + m.get_all("Cc", [])),
             "date": dt,
@@ -1294,6 +1295,7 @@ def _pst_message_fields(message, folder_name, body_cap=BODY_CAP):
             dt = None
         return {
             "subject": dec(m.get("Subject") or ""),
+            "message_id": (m.get("Message-ID") or "").strip().strip("<>").strip(),
             "from": getaddresses(m.get_all("From", [])),
             "to": getaddresses(m.get_all("To", []) + m.get_all("Cc", [])),
             "date": dt,
@@ -1312,6 +1314,7 @@ def _pst_message_fields(message, folder_name, body_cap=BODY_CAP):
         email = ""
     return {
         "subject": getattr(message, "subject", None) or "",
+        "message_id": "",
         "from": [(name or "", email)],
         "to": [],
         "date": _pst_date(message),
@@ -1610,12 +1613,28 @@ def _fold_linkedin(rows, entries, run_date, source="linkedin"):
     return rows, n_enriched, n_added, n_ambiguous, n_skipped
 
 
-def dump_llm(src, out_path):
+def _addr_to_contact_id(rows):
+    """Build an {email-address -> contact id} index from DB rows, so a scraped
+    message can be linked back to the contact it is from/to."""
+    idx = {}
+    for r in rows:
+        cid = r.get("id")
+        for a in [r.get("primary_email", "")] + list(r.get("emails") or []):
+            a = (a or "").strip().lower()
+            if a and a not in idx:
+                idx[a] = cid
+    return idx
+
+
+def dump_llm(src, out_path, addr_to_id=None):
     """Stream a per-email JSONL corpus from a normalized-message source.
 
-    One JSON object per line: subject/from/to/date/body. Skips spam, no-reply /
-    automated-bulk senders, and empty bodies; strips quoted reply history from
-    each body and de-duplicates identical bodies. Returns the records written.
+    One JSON object per line: message_id/contact_id/from/to/subject/date/body.
+    `contact_id` links the message to a database contact (the first from/to
+    address found in `addr_to_id`, else null); pass addr_to_id=None to omit the
+    lookup. Skips spam, no-reply / automated-bulk senders, and empty bodies;
+    strips quoted reply history and de-duplicates identical bodies. Returns the
+    number of records written.
     """
     outdir = os.path.dirname(out_path)
     if outdir:
@@ -1641,10 +1660,19 @@ def dump_llm(src, out_path):
                 dup += 1
                 continue
             seen.add(digest)
+            contact_id = None
+            if addr_to_id:
+                for _, a in list(msg["from"]) + list(msg["to"]):
+                    a = (a or "").strip().lower()
+                    if a in addr_to_id:
+                        contact_id = addr_to_id[a]
+                        break
             rec = {
-                "subject": msg.get("subject", ""),
+                "message_id": msg.get("message_id", ""),
+                "contact_id": contact_id,
                 "from": _format_addrs(msg["from"]),
                 "to": _format_addrs(msg["to"]),
+                "subject": msg.get("subject", ""),
                 "date": msg["date"].isoformat() if msg["date"] else "",
                 "body": body,
             }
@@ -2598,16 +2626,24 @@ def cmd_import_linkedin(args, ofmt, run_date):
 
 
 def cmd_dump_llm(args, ifmt):
-    """Dump a per-email JSONL corpus from an mbox/PST; no DB. Bodies are capped
-    at --max-body bytes (0 = unlimited) so attachment blobs don't dominate."""
+    """Dump a per-email JSONL corpus from an mbox/PST. Bodies are capped at
+    --max-body bytes (0 = unlimited) so attachment blobs don't dominate. If a
+    database is available (--db or $MC_DB), each record's contact_id links the
+    message to the contact it is from/to."""
     path = args.input
     if not os.path.isfile(path):
         sys.exit("error: input not found: %s" % path)
+    addr_to_id = None
+    db = (getattr(args, "db", None) or os.environ.get("MC_DB", "")).strip()
+    if db and os.path.isfile(db):
+        addr_to_id = _addr_to_contact_id(load_rows(db))
+        sys.stderr.write("Linking emails to %d contacts in %s\n"
+                         % (len(set(addr_to_id.values())), db))
     cap = args.max_body or None   # 0 -> unlimited
     src = (iter_pst_messages(path, body_cap=cap) if ifmt == "pst"
            else iter_mbox_messages(path, body_cap=cap))
     out_path = _resolve_out(args.output, "jsonl")
-    n = dump_llm(src, out_path)
+    n = dump_llm(src, out_path, addr_to_id=addr_to_id)
     sys.stderr.write(f"Wrote {n:,} email records to {out_path}\n")
 
 
@@ -2889,180 +2925,214 @@ def resolve_format(path, override):
     return _EXT_FORMAT.get(os.path.splitext(path)[1].lower())
 
 
+IMPORT_FORMATS = ["mbox", "pst", "vcard", "outlook", "linkedin",
+                  "json", "csv", "xlsx"]
+EXPORT_FORMATS = ["json", "csv", "xlsx", "outlook", "vcard"]
+
+# Every args attribute the cmd_* handlers may read, with a safe default, so a
+# subcommand that doesn't expose a given flag still yields a complete namespace.
+_ARG_DEFAULTS = {
+    "input": None, "output": None, "format": None, "reconcile": False,
+    "llm": False, "force": False, "no_cc": False, "discover_phones": False,
+    "self_phone": None, "import_date": None, "max_body": 262144,
+    "whitelist": None, "blacklist": None, "verbose": False,
+    "category": None, "company": None, "first_name": None, "last_name": None,
+    "email_domain": None, "min_emails": None, "max_emails": None,
+    "min_sent": None, "max_sent": None, "min_received": None,
+    "max_received": None, "min_ranking": None, "max_ranking": None,
+    "last_after": None, "last_before": None, "first_after": None,
+    "first_before": None,
+}
+
+_DISCOVER_PHONES_HELP = (
+    "(OFF by default) mine phone numbers from the signature region of received "
+    "mail and credit the most-frequent number to the sender. HEURISTIC AND "
+    "ERROR-PRONE: a signature quoted at the bottom of a reply thread is easily "
+    "misattributed, so ~15%%+ of discovered numbers are wrong (one number can "
+    "spread across many contacts). Structured imports (vCard/Outlook/LinkedIn) "
+    "keep their phone fields regardless. Pair with --self-phone; reconcile "
+    "drops numbers shared across many contacts.")
+_SELF_PHONE_HELP = (
+    "your own phone number(s) (comma-separated; also read from $MC_SELF_PHONE) "
+    "to never ingest as a contact's number")
+
+
+def _add_export_filters(sp):
+    """Attach the export selection filters to a subparser."""
+    sp.add_argument("--category", dest="category",
+                    help="match contact category against any of LIST")
+    sp.add_argument("--company", help="match company against any of LIST")
+    sp.add_argument("--first-name", dest="first_name",
+                    help="match first name against any of LIST")
+    sp.add_argument("--last-name", dest="last_name",
+                    help="match last name against any of LIST")
+    sp.add_argument("--email-domain", dest="email_domain",
+                    help="match primary email domain against any of LIST")
+    sp.add_argument("--min-emails", type=int, help="minimum num_emails")
+    sp.add_argument("--max-emails", type=int, help="maximum num_emails")
+    sp.add_argument("--min-sent", type=int, help="minimum num_sent")
+    sp.add_argument("--max-sent", type=int, help="maximum num_sent")
+    sp.add_argument("--min-received", type=int, help="minimum num_received")
+    sp.add_argument("--max-received", type=int, help="maximum num_received")
+    sp.add_argument("--min-ranking", type=int, help="minimum ranking (0-100)")
+    sp.add_argument("--max-ranking", type=int, help="maximum ranking (0-100)")
+    sp.add_argument("--last-after", dest="last_after", metavar="YYYY-MM-DD",
+                    help="last_interaction on or after this date")
+    sp.add_argument("--last-before", dest="last_before", metavar="YYYY-MM-DD",
+                    help="last_interaction on or before this date")
+    sp.add_argument("--first-after", dest="first_after", metavar="YYYY-MM-DD",
+                    help="first_interaction on or after this date")
+    sp.add_argument("--first-before", dest="first_before", metavar="YYYY-MM-DD",
+                    help="first_interaction on or before this date")
+    sp.add_argument("--whitelist", dest="whitelist", metavar="PATH",
+                    nargs="+", action="extend",
+                    help="keep only contacts whose email domain matches an "
+                         "entry in these files (subdomains match; repeatable)")
+    sp.add_argument("--blacklist", dest="blacklist", metavar="PATH",
+                    nargs="+", action="extend",
+                    help="drop contacts whose email domain matches an entry in "
+                         "these files (subdomains match; repeatable)")
+
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser(
         prog="mc",
-        description="mailcompiler: build and query a contacts database. The "
-                    "operation is inferred from the -i/-o formats: a mailbox, "
-                    "vCard, Outlook CSV, or LinkedIn export imports into a "
-                    "contacts DB; a JSON input exports (-o .csv/.vcf) or "
-                    "reconciles (-o .json --reconcile). Imports and DB writes "
-                    "always fold into the existing -o (never wiping it); pass "
-                    "--force to overwrite overlapping fields.")
-    p.add_argument("-i", "--input", dest="input",
-                   help="input path: a mailbox (.mbox/.pst), a vCard "
-                        "(.vcf/.vcd), an Outlook CSV (--iformat outlook), or a "
-                        "contacts .json. Defaults to $MC_DB if set.")
-    p.add_argument("-o", "--output", dest="output",
-                   help="output path: a .json contacts DB, a .csv/.vcf export, "
-                        "or a .jsonl corpus (with --llm). Defaults to $MC_DB "
-                        "if set.")
-    p.add_argument("--iformat", choices=FORMATS,
-                   help="force the input format instead of inferring it from "
-                        "the extension; 'outlook' reads an Outlook/Google CSV")
-    p.add_argument("--oformat", choices=FORMATS,
-                   help="force the output format instead of inferring it from "
-                        "the extension; 'outlook' writes Outlook's CSV layout")
-    p.add_argument("--reconcile", action="store_true",
-                   help="clean and merge records (json -> json): drop junk/role "
-                        "addresses, merge duplicates by email and by name, "
-                        "recompute fields, and pick the best primary email")
-    p.add_argument("-v", "--verbose", action="store_true",
-                   help="print every discard/action to stderr: on import, each "
-                        "skipped email and why (spam, trash, self, blacklisted, "
-                        "automated, no-name); with --reconcile, every "
-                        "drop/merge/field change")
-    p.add_argument("--force", action="store_true",
-                   help="when an imported record overlaps an existing one, "
-                        "overwrite the existing text fields (company, title, "
-                        "name, ...) with the incoming values; by default existing "
-                        "(hand-edited) values are kept")
-    p.add_argument("--self-phone", dest="self_phone", metavar="LIST",
-                   help="your own phone number(s) (comma-separated; also read "
-                        "from $MC_SELF_PHONE) to never ingest as a contact's "
-                        "number -- they leak into records via quoted signatures")
-    p.add_argument("--discover-phones", dest="discover_phones",
-                   action="store_true",
-                   help="(mailbox import; OFF by default) mine phone numbers from "
-                        "the signature region of received mail -- the tail of the "
-                        "body below a '-- ' marker / above the quoted reply -- and "
-                        "credit the most-frequent number to the sender. HEURISTIC "
-                        "AND ERROR-PRONE: a signature quoted at the bottom of a "
-                        "reply thread is easily misattributed, so ~15%%+ of "
-                        "discovered numbers are wrong (one number can spread "
-                        "across many contacts). Structured imports (vCard/Outlook/"
-                        "LinkedIn) always keep their phone fields regardless. Pair "
-                        "with --self-phone; reconcile drops numbers shared across "
-                        "many contacts.")
-    p.add_argument("--llm", action="store_true",
-                   help="dump a per-email JSONL corpus (subject/from/to/date/"
-                        "body) from an mbox/PST instead of building the DB")
-    p.add_argument("--max-body", dest="max_body", type=int, default=262144,
-                   metavar="BYTES",
-                   help="--llm: cap each message body to BYTES (default 262144; "
-                        "0 = unlimited) so attachment blobs do not dominate")
-    p.add_argument("--no-cc", dest="no_cc", action="store_true",
-                   help="when importing a mailbox, do NOT bring in the other "
-                        "To/Cc recipients of mail you received; keep only direct "
-                        "senders and the recipients of your sent mail (less noise)")
-    # Override the import_date stamp (default: today). Hidden; used by tests.
-    p.add_argument("--import-date", dest="import_date", metavar="YYYY-MM-DD",
-                   help=argparse.SUPPRESS)
-    p.add_argument("--whitelist", dest="whitelist", metavar="PATH",
-                   nargs="+", action="extend",
-                   help="keep only contacts whose email domain matches an entry "
-                        "in these files (one domain per line; '#' comments and "
-                        "blank lines ignored; subdomains match too). Accepts "
-                        "multiple files (unioned) and may be repeated.")
-    p.add_argument("--blacklist", dest="blacklist", metavar="PATH",
-                   nargs="+", action="extend",
-                   help="drop contacts/addresses whose email domain matches an "
-                        "entry in these files (one per line; '#' comments and "
-                        "blank lines ignored; subdomains match too). Accepts "
-                        "multiple files (unioned) and may be repeated.")
-    # Export filters (apply when the operation resolves to an export).
-    p.add_argument("--category", dest="category",
-                   help="match contact category (industry segment from the "
-                        "yellowpages directory) against any of LIST")
-    p.add_argument("--company", help="match company against any of LIST")
-    p.add_argument("--first-name", dest="first_name",
-                   help="match first name against any of LIST")
-    p.add_argument("--last-name", dest="last_name",
-                   help="match last name against any of LIST")
-    p.add_argument("--email-domain", dest="email_domain",
-                   help="match primary email domain against any of LIST")
-    p.add_argument("--min-emails", type=int, help="minimum num_emails")
-    p.add_argument("--max-emails", type=int, help="maximum num_emails")
-    p.add_argument("--min-sent", type=int, help="minimum num_sent")
-    p.add_argument("--max-sent", type=int, help="maximum num_sent")
-    p.add_argument("--min-received", type=int, help="minimum num_received")
-    p.add_argument("--max-received", type=int, help="maximum num_received")
-    p.add_argument("--min-ranking", type=int, help="minimum ranking (0-100)")
-    p.add_argument("--max-ranking", type=int, help="maximum ranking (0-100)")
-    p.add_argument("--last-after", dest="last_after", metavar="YYYY-MM-DD",
-                   help="last_interaction on or after this date")
-    p.add_argument("--last-before", dest="last_before", metavar="YYYY-MM-DD",
-                   help="last_interaction on or before this date")
-    p.add_argument("--first-after", dest="first_after", metavar="YYYY-MM-DD",
-                   help="first_interaction on or after this date")
-    p.add_argument("--first-before", dest="first_before", metavar="YYYY-MM-DD",
-                   help="first_interaction on or before this date")
+        description="mailcompiler: aggregate, de-duplicate and query a contacts "
+                    "database. The database is set by --db or $MC_DB.")
+    pv = argparse.ArgumentParser(add_help=False)
+    pv.add_argument("-v", "--verbose", action="store_true",
+                    help="print every discard/action to stderr")
+    pdb = argparse.ArgumentParser(add_help=False, parents=[pv])
+    pdb.add_argument("--db", dest="db", metavar="PATH",
+                     help="contacts database path (.json/.csv/.xlsx); "
+                          "defaults to $MC_DB")
+    sub = p.add_subparsers(dest="command", required=True,
+                           metavar="{import,export,reconcile,scrape}")
+
+    imp = sub.add_parser("import", parents=[pdb],
+                         help="fold a source into the database")
+    imp.add_argument("source",
+                     help="file to import (mbox/PST/vCard/Outlook/LinkedIn "
+                          "CSV, or a json/csv/xlsx DB)")
+    imp.add_argument("--format", dest="format", choices=IMPORT_FORMATS,
+                     help="override format inference; use 'outlook' or "
+                          "'linkedin' for a .csv")
+    imp.add_argument("--force", action="store_true",
+                     help="overwrite existing text fields with incoming values "
+                          "(default keeps hand-edited values)")
+    imp.add_argument("--no-cc", dest="no_cc", action="store_true",
+                     help="mailbox import: skip the other To/Cc recipients of "
+                          "mail you received (less noise)")
+    imp.add_argument("--discover-phones", dest="discover_phones",
+                     action="store_true", help=_DISCOVER_PHONES_HELP)
+    imp.add_argument("--self-phone", dest="self_phone", metavar="LIST",
+                     help=_SELF_PHONE_HELP)
+    imp.add_argument("--blacklist", dest="blacklist", metavar="PATH",
+                     nargs="+", action="extend",
+                     help="drop addresses whose domain matches an entry in "
+                          "these files (subdomains match; repeatable)")
+    imp.add_argument("--import-date", dest="import_date", help=argparse.SUPPRESS)
+
+    exp = sub.add_parser("export", parents=[pdb],
+                         help="write a filtered view of the database to a file")
+    exp.add_argument("dest", help="output file (.csv/.xlsx/.vcf/.json; "
+                                  "format from the extension)")
+    exp.add_argument("--format", dest="format", choices=EXPORT_FORMATS,
+                     help="override output format; 'outlook' writes Outlook's "
+                          "column layout")
+    _add_export_filters(exp)
+
+    rec = sub.add_parser("reconcile", parents=[pdb],
+                         help="clean + merge duplicates in the database, in place")
+    rec.add_argument("--self-phone", dest="self_phone", metavar="LIST",
+                     help=_SELF_PHONE_HELP)
+
+    cor = sub.add_parser("scrape", parents=[pv],
+                         help="scrape a mailbox into a per-email JSONL corpus")
+    cor.add_argument("source", help="mbox/PST file")
+    cor.add_argument("-o", "--output", dest="output", required=True,
+                     metavar="PATH", help="output .jsonl path")
+    cor.add_argument("--db", dest="db", metavar="PATH",
+                     help="contacts database (.json/.csv/.xlsx; default $MC_DB) "
+                          "used to set each record's contact_id; optional")
+    cor.add_argument("--format", dest="format", choices=["mbox", "pst"],
+                     help="override format inference")
+    cor.add_argument("--max-body", dest="max_body", type=int, default=262144,
+                     metavar="BYTES",
+                     help="cap each message body to BYTES (default 262144; "
+                          "0 = unlimited)")
     return p.parse_args(argv)
 
 
-def _resolve_db_default(args):
-    """Fill a missing -i/-o from $MC_DB so the database path can be set once in
-    the environment instead of repeated on every command."""
-    db = os.environ.get("MC_DB", "").strip()
-    for attr, flag in (("input", "-i/--input"), ("output", "-o/--output")):
-        if not getattr(args, attr):
-            if not db:
-                sys.exit("error: no %s given and $MC_DB is not set" % flag)
-            setattr(args, attr, db)
-            sys.stderr.write("Using $MC_DB for %s: %s\n" % (flag, db))
+def _apply_arg_defaults(args):
+    """Ensure every attribute the cmd_* handlers read exists (subcommands only
+    define their own flags)."""
+    for k, v in _ARG_DEFAULTS.items():
+        if not hasattr(args, k):
+            setattr(args, k, v)
+
+
+def _resolve_db_path(args, must_exist):
+    """The working database (path, native-format): --db wins, else $MC_DB, else
+    error. With must_exist the file must already be there (export/reconcile need
+    data); import may create it fresh."""
+    db = (getattr(args, "db", None) or os.environ.get("MC_DB", "")).strip()
+    if not db:
+        sys.exit("error: no database; pass --db PATH or set $MC_DB")
+    if must_exist and not os.path.isfile(db):
+        sys.exit("error: database not found: %s (pass --db or set $MC_DB)" % db)
+    ofmt = resolve_format(db, None)
+    if ofmt not in DB_FORMATS:
+        sys.exit("error: --db must be a .json/.csv/.xlsx database, got %s" % db)
+    return db, ofmt
 
 
 def main(argv=None):
     args = parse_args(argv)
-    _resolve_db_default(args)
-    ifmt = resolve_format(args.input, args.iformat)
-    ofmt = resolve_format(args.output, args.oformat)
-    if ifmt is None:
-        sys.exit("error: cannot determine the format of input %s; "
-                 "pass --iformat" % args.input)
-    if ofmt is None:
-        sys.exit("error: cannot determine the format of output %s; "
-                 "pass --oformat" % args.output)
+    _apply_arg_defaults(args)
+    cmd = args.command
 
-    # --llm: per-email JSONL dump from a mailbox (no contacts DB).
-    if args.llm:
+    if cmd == "scrape":
+        args.input = args.source
+        ifmt = resolve_format(args.input, args.format)
         if ifmt not in ("mbox", "pst"):
-            sys.exit("error: --llm requires an mbox or PST input")
-        if ofmt != "jsonl":
-            sys.exit("error: --llm writes a .jsonl corpus, so -o must be .jsonl")
-        if args.reconcile:
-            sys.exit("error: --llm cannot be combined with --reconcile")
+            sys.exit("error: scrape needs an mbox or PST source; pass --format")
+        if not (args.output or "").lower().endswith(".jsonl"):
+            sys.exit("error: scrape output must be a .jsonl file")
         return cmd_dump_llm(args, ifmt)
 
-    # Import: a mailbox / vCard / Outlook CSV / LinkedIn export builds contacts,
-    # written in the output format (.json DB, .csv, Outlook CSV, or .vcf).
-    if ifmt in ("mbox", "pst", "vcard", "outlook", "linkedin"):
-        if ofmt == "jsonl":
-            sys.exit("error: a .jsonl corpus is produced only with --llm")
-        if ofmt not in DB_FORMATS and ifmt == "linkedin":
-            sys.exit("error: a LinkedIn import writes a contacts database; "
-                     "-o must be .json/.csv/.xlsx (not %s)" % ofmt)
-        if args.reconcile:
-            sys.exit("error: --reconcile applies to a json -> json database, not "
-                     "an import; import to .json first, then reconcile")
-        return cmd_import(args, ifmt, ofmt)
-
-    # Native contacts DB input (json/csv/xlsx -- interchangeable layouts).
-    if ifmt in DB_FORMATS:
-        if ofmt == "jsonl":
-            sys.exit("error: a .jsonl corpus is produced only with --llm")
-        if args.reconcile:
-            if ofmt not in DB_FORMATS:
-                sys.exit("error: --reconcile produces a native database; "
-                         "-o must be .json/.csv/.xlsx (not %s)" % ofmt)
+    if cmd == "import":
+        db, ofmt = _resolve_db_path(args, must_exist=False)
+        args.input, args.output = args.source, db
+        ifmt = resolve_format(args.input, args.format)
+        if ifmt is None:
+            sys.exit("error: cannot determine the format of %s; pass --format"
+                     % args.input)
+        if ifmt in DB_FORMATS:                 # merging one DB into another
+            args.reconcile = False
             return cmd_db(args, ofmt)
-        # DB -> .json folds into the existing DB (never wipes it); DB -> other
-        # native formats / vCard / Outlook is a (filtered) export view.
-        if ofmt == "json":
-            return cmd_db(args, ofmt)
-        return cmd_export(args, ofmt)   # csv/xlsx/outlook/vcard, with filters
+        if ifmt in ("mbox", "pst", "vcard", "outlook", "linkedin"):
+            return cmd_import(args, ifmt, ofmt)
+        sys.exit("error: cannot import a %s file" % ifmt)
 
-    sys.exit("error: unsupported input format: %s" % ifmt)
+    if cmd == "export":
+        db, _ = _resolve_db_path(args, must_exist=True)
+        args.input, args.output = db, args.dest
+        ofmt = resolve_format(args.output, args.format)
+        if ofmt is None:
+            sys.exit("error: cannot determine the format of %s; pass --format"
+                     % args.output)
+        if ofmt not in EXPORT_FORMATS:
+            sys.exit("error: cannot export to %s; use json/csv/xlsx/outlook/"
+                     "vcard (or 'mc scrape' for .jsonl)" % ofmt)
+        return cmd_export(args, ofmt)
+
+    if cmd == "reconcile":
+        db, ofmt = _resolve_db_path(args, must_exist=True)
+        args.input, args.output, args.reconcile = db, db, True
+        return cmd_db(args, ofmt)
+
+    sys.exit("error: unknown command: %s" % cmd)   # unreachable (required=True)
 
 
 if __name__ == "__main__":

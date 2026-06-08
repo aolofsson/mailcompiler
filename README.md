@@ -29,193 +29,199 @@
 
 ## TL;DR
 
-There's one command, `mc`, and one lossless read/write JSON database.
+`mc` has four commands -- `import`, `export`, `reconcile`, `scrape` -- over one
+lossless JSON database, set once via `--db` or `$MC_DB`.
 
 ```bash
-pip install mailcompiler                   # install the `mc` command
-export MC_DB=~/contacts.json               # set database location
-mc -i takeout.mbox                         # import mbox contacts
-mc -i connections.csv --iformat linkedin   # merge in linkedin connections
-mc --reconcile                             # clean + merge duplicates
-mc -o profit.xlsx                          # export to excel
+pip install mailcompiler                       # install the `mc` command
+export MC_DB=~/contacts.json                   # where the database lives
+mc import takeout.mbox                         # import mbox contacts
+mc import connections.csv --format linkedin    # merge in LinkedIn connections
+mc reconcile                                   # clean + merge duplicates
+mc export profit.xlsx                          # export to Excel
 ```
 
 ## Examples
 
-Build the JSON contacts database from a Gmail Takeout mbox and stash in $MC_DB:
+The database is `$MC_DB` (or `--db PATH`). `import` folds a source into it;
+`export` writes a filtered view out of it; `reconcile` cleans it in place.
 
-    mc -i "All mail Including Spam and Trash.mbox"
+Build the database from a Gmail Takeout mbox (into `$MC_DB`):
 
-Direct extraction from a Takeout mbox to an xlsx spreadsheet with an explicit output location:
+    mc import "All mail Including Spam and Trash.mbox"
 
-    mc -i "All mail Including Spam and Trash.mbox" -o data/contacts.xlsx
+Import into an explicit database file instead of `$MC_DB`:
 
-Import an Outlook PST and stash in $MC_DB:
+    mc import "All mail Including Spam and Trash.mbox" --db data/contacts.json
 
-    mc -i archive.pst
+Import an Outlook PST:
 
-Convert the JSON contacts in $MC_DB to an Excel spreadsheet:
+    mc import archive.pst
 
-    mc -o contacts.xlsx
+Import a vCard export (Google Contacts / Gmail):
 
-Import a vCard export (Google Contacts / Gmail) and store in explicit location:
+    mc import contacts.vcf
 
-    mc -i contacts.vcf -o data/contacts.json
+Import an Outlook / Google Contacts CSV export (`.csv` is ambiguous, so name it):
 
-Import an Outlook / Google Contacts CSV export (`--iformat outlook`):
+    mc import contacts.csv --format outlook
 
-    mc -i contacts.csv --iformat outlook -o data/contacts.json
+Enrich from a LinkedIn Connections export (overwrites company/title -- LinkedIn
+is the authority on current employer -- adds the profile URL, adds new
+connections, and stamps `import_date`):
 
-Enrich the DB from a LinkedIn Connections export (`--iformat linkedin`):
-overwrites company/title (LinkedIn is the authority on current employer), adds
-the profile URL, adds new connections, and stamps `import_date`:
+    mc import Connections.csv --format linkedin
 
-    mc -i Connections.csv --iformat linkedin -o data/contacts.json
+Imports always fold into the database (they never wipe it); manual edits are
+preserved unless you pass `--force` to overwrite overlapping fields:
 
-Imports always fold into the existing `-o` DB (they never wipe it); manual edits
-are preserved unless you pass `--force` to overwrite overlapping fields:
-
-    mc -i archive.pst -o data/contacts.json           # adds to the existing DB
-    mc -i archive.pst -o data/contacts.json --force   # let the import win on conflicts
+    mc import archive.pst                       # adds to the database
+    mc import archive.pst --force               # let the import win on conflicts
 
 Exclude whole domains while importing:
 
-    mc -i archive.pst -o data/contacts.json --blacklist blacklist.txt
+    mc import archive.pst --blacklist blacklist.txt
 
-Dump a per-email JSONL corpus for an LLM (no contacts DB):
+Export the database to an Excel spreadsheet:
 
-    mc -i mailbox.mbox -o emails.jsonl --llm
+    mc export contacts.xlsx
 
 Export filtered contacts to a vCard:
 
-    mc -i data/contacts.json --category "Semiconductor Devices,Defense" -o leads.vcf
+    mc export leads.vcf --category "Semiconductor Devices,Defense"
 
 Export filtered contacts to CSV:
 
-    mc --company Intel,AMD --min-emails 5 -o intel_amd.csv
+    mc export intel_amd.csv --company Intel,AMD --min-emails 5
 
 Export only contacts at target-company domains (`--whitelist`), or drop
 unwanted domains (`--blacklist`); both read one domain per line and ignore
 `#` comments and blank lines, and match subdomains too. Each flag takes a
 **list of files** (unioned), so you can keep categories in separate files:
 
-    mc --whitelist semiconductor.txt defense.txt -o targets.xlsx
-    mc --blacklist spam_domains.txt competitors.txt -o cleaned.json
+    mc export targets.xlsx --whitelist semiconductor.txt defense.txt
+    mc export cleaned.json --blacklist spam_domains.txt competitors.txt
 
-Export in Outlook's column layout, as CSV or XLSX (`--oformat outlook`):
+Export in Outlook's column layout, as CSV or XLSX (`--format outlook`):
 
-    mc -o outlook.csv --oformat outlook
-    mc -o outlook.xlsx --oformat outlook
+    mc export outlook.csv  --format outlook
+    mc export outlook.xlsx --format outlook
 
-Clean and merge duplicate records, rewriting in place:
+Clean and merge duplicate records, in place:
 
-    mc --reconcile
+    mc reconcile
 
-Merge one database into another (folding `extra.json` into `data/contacts.json`):
+Merge one database into another (folding `extra.json` into the database):
 
-    mc -i extra.json -o data/contacts.json
+    mc import extra.json --db data/contacts.json
+
+Scrape a mailbox into a per-email JSONL corpus for an LLM (no database):
+
+    mc scrape mailbox.mbox -o emails.jsonl
 
 ### Set the database once with `$MC_DB`
 
-So you don't repeat `-o contacts.json` on every command, point `$MC_DB` at your
-database; a missing `-i` or `-o` then defaults to it (explicit flags still win):
+So you don't repeat `--db contacts.json` on every command, point `$MC_DB` at your
+database; `import`/`export`/`reconcile` then use it automatically (`--db` still wins):
 
 ```bash
 export MC_DB=~/contacts.json     # in your shell rc
-mc -i takeout.mbox               # -o defaults to $MC_DB (created if absent)
-mc -i archive.pst                # fold another source in
-mc --reconcile                   # -i and -o both default to $MC_DB
-mc -o leads.xlsx                 # export: -i defaults to $MC_DB
+mc import takeout.mbox           # folds into $MC_DB (created if absent)
+mc import archive.pst            # fold another source in
+mc reconcile                     # cleans $MC_DB in place
+mc export leads.xlsx             # exports from $MC_DB
 ```
 
 
 ## MC Help
 
-```
-usage: mc [-h] [-i INPUT] [-o OUTPUT]
-          [--iformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}]
-          [--oformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}]
-          [--reconcile] [-v] [--force] [--self-phone LIST] [--discover-phones]
-          [--llm] [--max-body BYTES] [--no-cc] [--whitelist PATH [PATH ...]]
-          [--blacklist PATH [PATH ...]] [--category CATEGORY]
-          [--company COMPANY] [--first-name FIRST_NAME]
-          [--last-name LAST_NAME] [--email-domain EMAIL_DOMAIN]
-          [--min-emails MIN_EMAILS] [--max-emails MAX_EMAILS]
-          [--min-sent MIN_SENT] [--max-sent MAX_SENT]
-          [--min-received MIN_RECEIVED] [--max-received MAX_RECEIVED]
-          [--min-ranking MIN_RANKING] [--max-ranking MAX_RANKING]
-          [--last-after YYYY-MM-DD] [--last-before YYYY-MM-DD]
-          [--first-after YYYY-MM-DD] [--first-before YYYY-MM-DD]
+`mc` is split into subcommands; run `mc <command> -h` for any one.
 
-mailcompiler: build and query a contacts database. The operation is inferred
-from the -i/-o formats: a mailbox, vCard, Outlook CSV, or LinkedIn export
-imports into a contacts DB; a JSON input exports (-o .csv/.vcf) or reconciles
-(-o .json --reconcile). Imports and DB writes always fold into the existing -o
-(never wiping it); pass --force to overwrite overlapping fields.
+```
+$ mc -h
+usage: mc [-h] {import,export,reconcile,scrape} ...
+
+mailcompiler: aggregate, de-duplicate and query a contacts database. The
+database is set by --db or $MC_DB.
+
+positional arguments:
+  {import,export,reconcile,scrape}
+    import              fold a source into the database
+    export              write a filtered view of the database to a file
+    reconcile           clean + merge duplicates in the database, in place
+    scrape              scrape a mailbox into a per-email JSONL corpus
 
 options:
   -h, --help            show this help message and exit
-  -i INPUT, --input INPUT
-                        input path: a mailbox (.mbox/.pst), a vCard
-                        (.vcf/.vcd), an Outlook CSV (--iformat outlook), or a
-                        contacts .json. Defaults to $MC_DB if set.
-  -o OUTPUT, --output OUTPUT
-                        output path: a .json contacts DB, a .csv/.vcf export,
-                        or a .jsonl corpus (with --llm). Defaults to $MC_DB if
-                        set.
-  --iformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}
-                        force the input format instead of inferring it from
-                        the extension; 'outlook' reads an Outlook/Google CSV
-  --oformat {json,csv,xlsx,outlook,vcard,linkedin,mbox,pst,jsonl}
-                        force the output format instead of inferring it from
-                        the extension; 'outlook' writes Outlook's CSV layout
-  --reconcile           clean and merge records (json -> json): drop junk/role
-                        addresses, merge duplicates by email and by name,
-                        recompute fields, and pick the best primary email
-  -v, --verbose         print every discard/action to stderr: on import, each
-                        skipped email and why (spam, trash, self, blacklisted,
-                        automated, no-name); with --reconcile, every
-                        drop/merge/field change
-  --force               when an imported record overlaps an existing one,
-                        overwrite the existing text fields (company, title,
-                        name, ...) with the incoming values; by default
-                        existing (hand-edited) values are kept
-  --self-phone LIST     your own phone number(s) (comma-separated; also read
-                        from $MC_SELF_PHONE) to never ingest as a contact's
-                        number -- they leak into records via quoted signatures
-  --discover-phones     (mailbox import; OFF by default) mine phone numbers
-                        from the signature region of received mail -- the tail
-                        of the body below a '-- ' marker / above the quoted
-                        reply -- and credit the most-frequent number to the
-                        sender. HEURISTIC AND ERROR-PRONE: a signature quoted
-                        at the bottom of a reply thread is easily
-                        misattributed, so ~15%+ of discovered numbers are
-                        wrong (one number can spread across many contacts).
-                        Structured imports (vCard/Outlook/LinkedIn) always
+
+$ mc import -h
+usage: mc import [-h] [-v] [--db PATH]
+                 [--format {mbox,pst,vcard,outlook,linkedin,json,csv,xlsx}]
+                 [--force] [--no-cc] [--discover-phones] [--self-phone LIST]
+                 [--blacklist PATH [PATH ...]]
+                 source
+
+positional arguments:
+  source                file to import (mbox/PST/vCard/Outlook/LinkedIn CSV,
+                        or a json/csv/xlsx DB)
+
+options:
+  -h, --help            show this help message and exit
+  -v, --verbose         print every discard/action to stderr
+  --db PATH             contacts database path (.json/.csv/.xlsx); defaults to
+                        $MC_DB
+  --format {mbox,pst,vcard,outlook,linkedin,json,csv,xlsx}
+                        override format inference; use 'outlook' or 'linkedin'
+                        for a .csv
+  --force               overwrite existing text fields with incoming values
+                        (default keeps hand-edited values)
+  --no-cc               mailbox import: skip the other To/Cc recipients of
+                        mail you received (less noise)
+  --discover-phones     (OFF by default) mine phone numbers from the signature
+                        region of received mail and credit the most-frequent
+                        number to the sender. HEURISTIC AND ERROR-PRONE: a
+                        signature quoted at the bottom of a reply thread is
+                        easily misattributed, so ~15%+ of discovered numbers
+                        are wrong (one number can spread across many
+                        contacts). Structured imports (vCard/Outlook/LinkedIn)
                         keep their phone fields regardless. Pair with --self-
                         phone; reconcile drops numbers shared across many
                         contacts.
-  --llm                 dump a per-email JSONL corpus
-                        (subject/from/to/date/body) from an mbox/PST instead
-                        of building the DB
-  --max-body BYTES      --llm: cap each message body to BYTES (default 262144;
-                        0 = unlimited) so attachment blobs do not dominate
-  --no-cc               when importing a mailbox, do NOT bring in the other
-                        To/Cc recipients of mail you received; keep only
-                        direct senders and the recipients of your sent mail
-                        (less noise)
-  --whitelist PATH [PATH ...]
-                        keep only contacts whose email domain matches an entry
-                        in these files (one domain per line; '#' comments and
-                        blank lines ignored; subdomains match too). Accepts
-                        multiple files (unioned) and may be repeated.
+  --self-phone LIST     your own phone number(s) (comma-separated; also read
+                        from $MC_SELF_PHONE) to never ingest as a contact's
+                        number
   --blacklist PATH [PATH ...]
-                        drop contacts/addresses whose email domain matches an
-                        entry in these files (one per line; '#' comments and
-                        blank lines ignored; subdomains match too). Accepts
-                        multiple files (unioned) and may be repeated.
-  --category CATEGORY   match contact category (industry segment from the
-                        yellowpages directory) against any of LIST
+                        drop addresses whose domain matches an entry in these
+                        files (subdomains match; repeatable)
+
+$ mc export -h
+usage: mc export [-h] [-v] [--db PATH]
+                 [--format {json,csv,xlsx,outlook,vcard}]
+                 [--category CATEGORY] [--company COMPANY]
+                 [--first-name FIRST_NAME] [--last-name LAST_NAME]
+                 [--email-domain EMAIL_DOMAIN] [--min-emails MIN_EMAILS]
+                 [--max-emails MAX_EMAILS] [--min-sent MIN_SENT]
+                 [--max-sent MAX_SENT] [--min-received MIN_RECEIVED]
+                 [--max-received MAX_RECEIVED] [--min-ranking MIN_RANKING]
+                 [--max-ranking MAX_RANKING] [--last-after YYYY-MM-DD]
+                 [--last-before YYYY-MM-DD] [--first-after YYYY-MM-DD]
+                 [--first-before YYYY-MM-DD] [--whitelist PATH [PATH ...]]
+                 [--blacklist PATH [PATH ...]]
+                 dest
+
+positional arguments:
+  dest                  output file (.csv/.xlsx/.vcf/.json; format from the
+                        extension)
+
+options:
+  -h, --help            show this help message and exit
+  -v, --verbose         print every discard/action to stderr
+  --db PATH             contacts database path (.json/.csv/.xlsx); defaults to
+                        $MC_DB
+  --format {json,csv,xlsx,outlook,vcard}
+                        override output format; 'outlook' writes Outlook's
+                        column layout
+  --category CATEGORY   match contact category against any of LIST
   --company COMPANY     match company against any of LIST
   --first-name FIRST_NAME
                         match first name against any of LIST
@@ -245,8 +251,44 @@ options:
                         first_interaction on or after this date
   --first-before YYYY-MM-DD
                         first_interaction on or before this date
+  --whitelist PATH [PATH ...]
+                        keep only contacts whose email domain matches an entry
+                        in these files (subdomains match; repeatable)
+  --blacklist PATH [PATH ...]
+                        drop contacts whose email domain matches an entry in
+                        these files (subdomains match; repeatable)
 
+$ mc reconcile -h
+usage: mc reconcile [-h] [-v] [--db PATH] [--self-phone LIST]
+
+options:
+  -h, --help         show this help message and exit
+  -v, --verbose      print every discard/action to stderr
+  --db PATH          contacts database path (.json/.csv/.xlsx); defaults to
+                     $MC_DB
+  --self-phone LIST  your own phone number(s) (comma-separated; also read from
+                     $MC_SELF_PHONE) to never ingest as a contact's number
+
+$ mc scrape -h
+usage: mc scrape [-h] [-v] -o PATH [--db PATH] [--format {mbox,pst}]
+                 [--max-body BYTES]
+                 source
+
+positional arguments:
+  source                mbox/PST file
+
+options:
+  -h, --help            show this help message and exit
+  -v, --verbose         print every discard/action to stderr
+  -o PATH, --output PATH
+                        output .jsonl path
+  --db PATH             contacts database (.json/.csv/.xlsx; default $MC_DB)
+                        used to set each record's contact_id; optional
+  --format {mbox,pst}   override format inference
+  --max-body BYTES      cap each message body to BYTES (default 262144; 0 =
+                        unlimited)
 ```
+
 
 ## Database Record
 
@@ -302,9 +344,9 @@ fields, in this order:
 | `first_interaction` | string\|null | Earliest interaction date (`YYYY-MM-DD`), or `null` if unknown. |
 | `last_interaction` | string\|null | Latest interaction date (`YYYY-MM-DD`), or `null` if unknown. |
 | `source` | string | Origin file(s) the record came from, joined by ` \| `. |
-| `linkedin` | string | LinkedIn profile URL; set by a LinkedIn import (`--iformat linkedin`), otherwise blank. |
+| `linkedin` | string | LinkedIn profile URL; set by a LinkedIn import (`--format linkedin`), otherwise blank. |
 | `github` | string | GitHub profile URL/handle; annotation you fill in, or from a vCard `URL`. Blank otherwise. |
-| `ranking` | integer | Hand-set importance score `0`–`100` (default `0`); filterable with `--min-ranking`/`--max-ranking`. Merges keep the higher value. |
+| `ranking` | integer | User defined contact ranking `0`-`100` (default `0`); filterable with `--min-ranking`/`--max-ranking`. Merges keep the higher value. |
 | `notes` | string | Free-text annotation you fill in. Blank otherwise. |
 | `import_date` | string | Date (`YYYY-MM-DD`) of the most recent non-database import (mbox/PST/vCard/Outlook/LinkedIn) that touched this record; blank for purely database-derived rows. |
 | `id` | string | Stable per-record UUID, minted when the record is first created and preserved across merges. |
@@ -320,30 +362,30 @@ properties on export.
 
 ## Building the contacts database
 
-An mbox/PST/vCard/Outlook-CSV input is treated as an **import**, building
-contacts into the output database. A Gmail Takeout `.mbox`, an Outlook `.pst`,
-and a vCard `.vcf`/`.vcd` are recognized by the `-i` extension. From a mailbox,
-contacts are the people you have corresponded with (sent to or heard from), with
-automated/bulk senders, spam, and nameless entries filtered out, identities
-merged by display name, and company derived from the email domain.
+`mc import SOURCE` folds a mailbox/vCard/Outlook-CSV/LinkedIn source into the
+database. A Gmail Takeout `.mbox`, an Outlook `.pst`, and a vCard `.vcf`/`.vcd`
+are recognized by the `SOURCE` extension. From a mailbox, contacts are the people
+you have corresponded with (sent to or heard from), with automated/bulk senders,
+spam, and nameless entries filtered out, identities merged by display name, and
+company derived from the email domain.
 
 ```bash
-mc -i "/path/to/Takeout/Mail/All mail Including Spam and Trash.mbox" -o data/contacts.json
-mc -i "/path/to/archive.pst" -o data/contacts.json    # Outlook PST
-mc -i "/path/to/contacts.vcf" -o data/contacts.json   # vCard (e.g. a Gmail export)
+mc import "/path/to/Takeout/Mail/All mail Including Spam and Trash.mbox" --db data/contacts.json
+mc import "/path/to/archive.pst"  --db data/contacts.json    # Outlook PST
+mc import "/path/to/contacts.vcf" --db data/contacts.json    # vCard (e.g. a Gmail export)
 ```
 
-`-i` and `-o` each default to `$MC_DB` when omitted (see
+The database is `--db PATH`, or `$MC_DB` when `--db` is omitted (see
 [Set the database once with `$MC_DB`](#set-the-database-once-with-mc_db)). The
-output format follows the `-o` extension:
+database format follows the `--db` extension:
 `.json`, `.csv`, and `.xlsx` are the interchangeable native database formats
-(same columns, lossless round-trip -- edit the DB in Excel and re-import it), and
-`.vcf` writes a vCard. Excel support is `.xlsx` only (via openpyxl); the legacy
-binary `.xls` is not supported. To read an **Outlook-format CSV/XLSX** (the
-column layout Outlook and Google Contacts export) pass `--iformat outlook`, since
-a bare `.csv`/`.xlsx` is read as the native layout:
+(same columns, lossless round-trip -- edit the DB in Excel and re-import it).
+Excel support is `.xlsx` only (via openpyxl); the legacy binary `.xls` is not
+supported. To read an **Outlook-format CSV/XLSX** (the column layout Outlook and
+Google Contacts export) pass `--format outlook`, since a bare `.csv`/`.xlsx` is
+read as the native layout:
 
-    mc -i contacts.csv --iformat outlook -o data/contacts.json
+    mc import contacts.csv --format outlook --db data/contacts.json
 
 The Outlook reader takes First/Last Name, Job Title, Company, the E-mail Address
 columns, Business Phone, and the business address columns; `category`/`friend` and
@@ -432,11 +474,10 @@ any that should still be dropped.
 
 ### Merging (the default) and `--force`
 
-An import (and a DB&nbsp;->&nbsp;`.json` write) **always folds into the existing
-output DB -- it never wipes it.** A missing output file is created fresh; an
-existing one is read, merged into, and written back. There is no separate
-"overwrite the whole file" mode: to start over, delete the file (or point `-o` at
-a new path).
+An import **always folds into the database -- it never wipes it.** A missing
+database file is created fresh; an existing one is read, merged into, and written
+back. There is no separate "overwrite the whole file" mode: to start over, delete
+the file (or point `--db` at a new path).
 
 For an existing contact, the counts (`num_emails`, `num_sent`, `num_received`)
 are overwritten with the latest import, the email list is unioned, the
@@ -447,9 +488,9 @@ non-empty values **overwrite** those fields instead. Contacts present only in th
 old file are always kept.
 
 ```bash
-mc -i archive.pst -o data/contacts.json            # fold in; keep manual edits
-mc -i archive.pst -o data/contacts.json --force    # let the import win on conflicts
-mc -i extra.json  -o data/contacts.json            # fold one DB into another
+mc import archive.pst --db data/contacts.json          # fold in; keep manual edits
+mc import archive.pst --db data/contacts.json --force  # let the import win on conflicts
+mc import extra.json  --db data/contacts.json          # fold one DB into another
 ```
 
 This lets you re-run as a mailbox grows, or accumulate multiple sources, without
@@ -465,12 +506,12 @@ so email-less LinkedIn contacts survive a merge.)
 
 A LinkedIn **Connections** export (`Settings -> Data privacy -> Get a copy of
 your data -> Connections`) is the authority on a contact's *current* employer and
-title. Import it with `--iformat linkedin` (the `.csv` extension alone is
+title. Import it with `--format linkedin` (the `.csv` extension alone is
 ambiguous, so the format is explicit, like `outlook`); it folds into your existing
 DB:
 
 ```bash
-mc -i Connections.csv --iformat linkedin -o data/contacts.json
+mc import Connections.csv --format linkedin --db data/contacts.json
 ```
 
 How it differs from a normal merge:
@@ -491,30 +532,49 @@ How it differs from a normal merge:
 Re-running the same export is idempotent (URL/email matches refresh in place
 rather than duplicating).
 
-### Dump for an LLM
+### Scrape a mailbox for an LLM
 
-`--llm` skips the contacts database and instead writes a per-email **JSONL**
-corpus (one JSON object per line) for feeding to an LLM. Each record is
-`{subject, from, to, date, body}` with the full body, HTML stripped to text.
-Every message is included except obvious `no-reply` senders, and it works on both
-mbox and PST.
+`mc scrape` writes a per-email **JSONL** corpus (one JSON object per line) for
+feeding to an LLM. The full body is included, HTML stripped to text. Every
+message is included except obvious `no-reply` senders, and it works on both mbox
+and PST.
 
 ```bash
-mc -i mailbox.mbox -o emails.jsonl --llm
-mc -i archive.pst  -o emails.jsonl --llm    # works on PST too
+mc scrape mailbox.mbox -o emails.jsonl
+mc scrape archive.pst  -o emails.jsonl                      # works on PST too
+mc scrape mailbox.mbox -o emails.jsonl --db contacts.json   # link to contacts
 ```
+
+Pass `--db` (or set `$MC_DB`) to **link each email back to a contact**: the
+record's `contact_id` is the `id` of the database contact the message is from or
+to (the first matching address), or `null` if none matches. This couples the
+corpus to your contacts DB -- you can group, filter, or attribute scraped email
+by contact. Each record:
+
+```json
+{
+  "message_id": "msg_987654321",
+  "contact_id": "11111111-1111-1111-1111-111111111111",
+  "from": "Jordan Vale <jordan@example.com>",
+  "to": "you@example.org",
+  "subject": "Follow up on hardware architecture",
+  "date": "2025-03-15T14:22:00",
+  "body": "Hey, great catching up at the conference..."
+}
+```
+
+Without `--db`/`$MC_DB`, `contact_id` is `null` (the corpus is still produced).
 
 The JSONL is streamed as messages are read, so it scales to very large mailboxes
 without holding everything in memory.
 
 ## Exporting contacts
 
-Giving a **JSON database** as `-i` with a `.csv`/`.vcf` output runs an
-**export**: it selects a subset of contacts by per-column criteria and writes
-the **whole record** for each match. The output format follows the `-o`
-extension:
+`mc export DEST` selects a subset of contacts from the database by per-column
+criteria and writes the **whole record** for each match. The output format
+follows the `DEST` extension:
 
-- **`.csv`** -- all database columns. Pass `--oformat outlook` to instead write
+- **`.csv`** -- all database columns. Pass `--format outlook` to instead write
   Outlook's CSV column layout (`First Name`, `E-mail Address`, `Business Phone`,
   ...) that Outlook and Google Contacts import directly.
 - **`.vcf`** -- a Gmail-compatible **vCard 3.0** file (importable into Google
@@ -535,20 +595,17 @@ unioned, and the flag may also be repeated), so you can keep each category in
 its own file. They combine with each other and with all the column filters.
 
 ```bash
-# All semiconductor and defense contacts (category set by --reconcile) -> vCard:
-mc -i data/contacts.json --category "Semiconductor Devices,Defense" -o leads.vcf
+# All semiconductor and defense contacts (category set by reconcile) -> vCard:
+mc export leads.vcf --category "Semiconductor Devices,Defense"
 
 # Everyone at Intel or AMD with at least 5 emails, active since 2024 -> CSV:
-mc -i data/contacts.json \
-  --company Intel,AMD --min-emails 5 --last-after 2024-01-01 -o intel_amd.csv
+mc export intel_amd.csv --company Intel,AMD --min-emails 5 --last-after 2024-01-01
 
 # All intel.com contacts since 2025 -> vCard:
-mc -i data/contacts.json \
-  --email-domain intel.com --last-after 2025-01-01 -o intel.vcf
+mc export intel.vcf --email-domain intel.com --last-after 2025-01-01
 
 # Only contacts at target-company domains, split across category files -> XLSX:
-mc -i data/contacts.json \
-  --whitelist semiconductor.txt defense.txt equipment.txt -o targets.xlsx
+mc export targets.xlsx --whitelist semiconductor.txt defense.txt equipment.txt
 ```
 
 The vCard maps name/emails (primary marked `PREF`), `company`->ORG,
@@ -566,11 +623,11 @@ for the full set of filters (`--category`, `--first-name`, `--last-name`,
 ## Reconciling contacts
 
 After building a database from several sources (mbox, PST, vCard, Outlook,
-LinkedIn), `--reconcile` is a one-step cleanup pass over the JSON DB that merges
-duplicates (by both name and email) and tidies records:
+LinkedIn), `mc reconcile` is a one-step cleanup pass over the database that merges
+duplicates (by both name and email) and tidies records, in place:
 
 ```bash
-mc --reconcile -i contacts.json -o contacts.json   # clean + merge, in place
+mc reconcile --db contacts.json    # or just `mc reconcile` with $MC_DB set
 ```
 
 In order, reconcile:

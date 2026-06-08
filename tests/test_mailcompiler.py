@@ -460,7 +460,8 @@ class TestLlmCorpus:
         assert n == 2                                   # no-reply skipped
         assert {ln["subject"] for ln in lines} == {"Hi", "Re: Hi"}
         first = lines[0]
-        assert set(first) == {"subject", "from", "to", "date", "body"}
+        assert set(first) == {"message_id", "contact_id", "subject", "from",
+                              "to", "date", "body"}
         assert first["from"] == "Bob <bob@x.com>"
         assert first["body"] == "hello"
         assert lines[1]["date"] == "2024-05-05T09:00:00"
@@ -951,7 +952,7 @@ class TestWhitelistExportCli:
         wlp = _write_tmp("# semis\nintel.com\nnvidia.com\n", ".txt")
         outp = _write_tmp("", ".csv")
         try:
-            main(["-i", dbp, "-o", outp, "--whitelist", wlp])
+            main(["export", outp, "--db", dbp, "--whitelist", wlp])
             got = load_rows(outp)
         finally:
             for p in (dbp, wlp, outp):
@@ -971,7 +972,7 @@ class TestWhitelistExportCli:
         outp = _write_tmp("", ".csv")
         try:
             # two files passed to one flag are unioned
-            main(["-i", dbp, "-o", outp, "--whitelist", semis, defense])
+            main(["export", outp, "--db", dbp, "--whitelist", semis, defense])
             got = load_rows(outp)
         finally:
             for p in (dbp, semis, defense, outp):
@@ -1132,7 +1133,7 @@ class TestLinkedinImportCli:
             ("Nora", "New", "https://x/in/nora", "", "Startup", "Founder", "01 Jan 2024"),
         ]), ".csv")
         try:
-            main(["-i", lip, "--iformat", "linkedin", "-o", dbp,
+            main(["import", lip, "--format", "linkedin", "--db", dbp,
                   "--import-date", "2026-06-06"])
             got = load_rows(dbp)
         finally:
@@ -1163,7 +1164,7 @@ class TestMergeIsDefault:
         dbp = _write_tmp(json.dumps(db), ".json")
         mp = _write_tmp(self._mbox(), ".mbox")
         try:
-            main(["-i", mp, "-o", dbp])           # no --merge flag exists anymore
+            main(["import", mp, "--db", dbp])     # folds into the existing DB
             got = {r["primary_email"]: r for r in load_rows(dbp)}
         finally:
             for p in (dbp, mp):
@@ -1178,7 +1179,7 @@ class TestMergeIsDefault:
         basep = _write_tmp(json.dumps(base), ".json")
         extrap = _write_tmp(json.dumps(extra), ".json")
         try:
-            main(["-i", extrap, "-o", basep])     # DB -> json merges into base
+            main(["import", extrap, "--db", basep])   # fold one DB into another
             emails = {r["primary_email"] for r in load_rows(basep)}
         finally:
             for p in (basep, extrap):
@@ -1201,8 +1202,8 @@ class TestNoCcCli:
         d1 = _write_tmp("", ".json")
         d2 = _write_tmp("", ".json")
         try:
-            main(["-i", mp, "-o", d1])              # default: co-recipients in
-            main(["-i", mp, "-o", d2, "--no-cc"])   # opt out
+            main(["import", mp, "--db", d1])             # default: co-recipients in
+            main(["import", mp, "--db", d2, "--no-cc"])  # opt out
             with_cc = {r["primary_email"] for r in load_rows(d1)}
             without = {r["primary_email"] for r in load_rows(d2)}
         finally:
@@ -1226,7 +1227,7 @@ class TestImportDateStamp:
         mp = _write_tmp(self._mbox(), ".mbox")
         outp = _write_tmp("", ".json")
         try:
-            main(["-i", mp, "-o", outp, "--import-date", "2026-06-06"])
+            main(["import", mp, "--db", outp, "--import-date", "2026-06-06"])
             got = load_rows(outp)
         finally:
             for p in (mp, outp):
@@ -1239,7 +1240,7 @@ class TestImportDateStamp:
         src = _write_tmp(json.dumps(rows), ".json")
         outp = _write_tmp("", ".json")
         try:
-            main(["-i", src, "-o", outp])          # native json->json convert
+            main(["import", src, "--db", outp])    # fold one json DB into another
             got = load_rows(outp)
         finally:
             for p in (src, outp):
@@ -1363,14 +1364,14 @@ class TestPipelineEndToEnd:
         db = _write_tmp("", ".json")
         xl = _write_tmp("", ".xlsx")
         try:
-            main(["-i", mp, "-o", db])                                  # mbox
-            main(["-i", vp, "-o", db])                                  # vcard
-            main(["-i", op, "--iformat", "outlook", "-o", db])         # outlook
-            main(["-i", lp, "--iformat", "linkedin", "-o", db,         # linkedin
+            main(["import", mp, "--db", db])                            # mbox
+            main(["import", vp, "--db", db])                            # vcard
+            main(["import", op, "--format", "outlook", "--db", db])     # outlook
+            main(["import", lp, "--format", "linkedin", "--db", db,     # linkedin
                   "--import-date", "2026-06-06"])
-            main(["-i", db, "-o", db, "--reconcile"])                   # reconcile
+            main(["reconcile", "--db", db])                             # reconcile
             after = load_rows(db)
-            main(["-i", db, "-o", xl])                                  # export xlsx
+            main(["export", xl, "--db", db])                            # export xlsx
             xl_rows = load_rows(xl)
         finally:
             for p in (mp, vp, op, lp, db, xl):
@@ -1413,7 +1414,7 @@ class TestMcDbDefault:
         dbp = _write_tmp("", ".json")
         old = self._set_env(dbp)
         try:
-            main(["-i", src])            # no -o -> defaults to $MC_DB
+            main(["import", src])        # db from $MC_DB
             got = load_rows(dbp)
         finally:
             self._restore_env(old)
@@ -1428,7 +1429,7 @@ class TestMcDbDefault:
         outp = _write_tmp("", ".csv")
         old = self._set_env(dbp)
         try:
-            main(["-o", outp])           # no -i -> defaults to $MC_DB (export)
+            main(["export", outp])       # db from $MC_DB
             got = load_rows(outp)
         finally:
             self._restore_env(old)
@@ -1442,7 +1443,7 @@ class TestMcDbDefault:
         old = self._set_env(None)        # unset MC_DB
         raised = False
         try:
-            main(["-i", src])            # no -o and no $MC_DB -> error
+            main(["import", src])        # no $MC_DB -> error
         except SystemExit:
             raised = True
         finally:
@@ -1491,7 +1492,7 @@ class TestNewSchemaFields:
         new = _row(first="A", last="B", primary="a@example.com", ranking=20)
         merge_row(e, new)
         assert e["ranking"] == 80            # higher hand-set score wins
-        base = ["-i", "x.json", "-o", "out.csv"]
+        base = ["export", "out.csv", "--db", "x.json"]
         c = build_criteria(parse_args(base + ["--min-ranking", "50"]))
         assert matches(e, c)
         assert not matches(_row(first="C", last="D", primary="c@example.com",
@@ -1547,7 +1548,7 @@ class TestImportKeepsEmaillessContacts:
         src = _write_tmp(self.OUTLOOK, ".csv")
         out = _write_tmp("", ".json")
         try:
-            main(["-i", src, "--iformat", "outlook", "-o", out])
+            main(["import", src, "--format", "outlook", "--db", out])
             db = load_rows(out)
         finally:
             for p in (src, out):
@@ -1614,3 +1615,45 @@ class TestPhoneDeLeak:
         out = reconcile_contacts(rows)
         assert out and all(self.SHARED not in r["phone_numbers"] for r in out)
         assert all(r["primary_phone"] == "" for r in out)
+
+
+class TestScrapeContactId:
+    # synthetic mailbox; .test addresses are reserved/non-routable
+    MBOX = ("From x Wed Jun 03 14:35:08 +0000 2026\n"
+            "Message-ID: <msg987@globex.test>\n"
+            "From: Jordan Vale <jordan@globex.test>\n"
+            "To: you@example.test\n"
+            "Subject: Follow up\n"
+            "Date: Wed, 03 Jun 2026 14:35:06 +0000\n"
+            "Content-Type: text/plain\n\nHey, great catching up...\n")
+
+    def test_contact_id_and_message_id_linked(self):
+        cid = "11111111-1111-1111-1111-111111111111"
+        rec_db = _row(first="Jordan", last="Vale",
+                      primary="jordan@globex.test",
+                      emails=["jordan@globex.test"])
+        rec_db["id"] = cid
+        dbp = _write_tmp(json.dumps([rec_db]), ".json")
+        mp = _write_tmp(self.MBOX, ".mbox")
+        jl = _write_tmp("", ".jsonl")
+        try:
+            main(["scrape", mp, "-o", jl, "--db", dbp])
+            rec = json.loads(open(jl).readline())
+        finally:
+            for p in (dbp, mp, jl):
+                os.remove(p)
+        assert rec["contact_id"] == cid          # linked to the DB contact
+        assert rec["message_id"] == "msg987@globex.test"
+        assert rec["subject"] == "Follow up"
+
+    def test_no_db_leaves_contact_id_null(self):
+        mp = _write_tmp(self.MBOX, ".mbox")
+        jl = _write_tmp("", ".jsonl")
+        try:
+            main(["scrape", mp, "-o", jl])
+            rec = json.loads(open(jl).readline())
+        finally:
+            for p in (mp, jl):
+                os.remove(p)
+        assert rec["contact_id"] is None
+        assert rec["message_id"] == "msg987@globex.test"
