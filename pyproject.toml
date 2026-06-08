@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools>=77", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "mailcompiler"
-version = "0.1.0"
+dynamic = ["version"]            # version comes from the latest git tag (vX.Y.Z)
 description = "Aggregate, de-duplicate and clean contacts from mailboxes, CSV, Outlook, LinkedIn and vCard into one JSON database"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -40,6 +40,9 @@ include = ["mailcompiler*"]
 
 [tool.setuptools.package-data]
 mailcompiler = ["*.csv", "*.txt"]
+
+# Version is derived from git tags (vX.Y.Z); no version is stored in this file.
+[tool.setuptools_scm]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
